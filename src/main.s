@@ -1,65 +1,119 @@
 global _start
-
+extern setup_board
 default rel
-section .rodata
-    ;# enter alternate buffer -> clear screen -> hide cursor
-    clear_seq               db `\x1b[?1049h\x1b[2J\x1b[3J\x1b[H\x1b[?25l`
-    clear_len               equ $-clear_seq
 
-    ;# disables buffer -> show cursor
+section .rodata
+    ; =======  STRUCTS  ==================================================== #
+    ; man 2 sigaction
+    sa_struct:
+        dq exit_handler     ; sa_handler
+        dq 0x04000000       ; sa_flags (SA_RESTORER)
+        dq exit_restorer    ; sa_restorer
+        dq 0                ; sa_mask
+
+    ; man 3 timespec
+    timespec_struct:
+        dq 0                ; tv_sec
+        dq 16666666         ; tv_nsec (aprox 60fps)
+
+
+    ; ======  STRINGS  ===================================================== #
+    ; disables buffer -> show cursor
     return_seq              db `\x1b[?1049l\x1b[?25h`
     return_len              equ $-return_seq
 
     cursor_home             db `\x1b[H`
     cursor_home_len         equ $-cursor_home
 
-    error_str_cords         db "Error: coordinates cannot exceed (999, 999)"
-    error_str_cords_len     equ $-error_str_cords
+    read_res                db "You wrote: "
+    read_res_len            equ $-read_res
 
-    ;# struct sigaction, each field is 8 bytes
-    sa_struct:
-        dq exit_handler     ;# sa_handler
-        dq 0x04000000       ;# sa_flags (SA_RESTORER)
-        dq exit_restorer    ;# sa_restorer
-        dq 0                ;# sa_mask
+
+section .bss
+    ; Ref https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/termbits.h#L30
+    ; with NCSS = 32
+    termios_struct_og       resb 64    ; Backup of original settings
+    termios_struct_mod      resb 64    ; Settings we modify
 
 
 section .text
 _start:
-    ;# rt_sigaction
-    mov rdi, 2              ;# SIGINT (CTRL+C)
-    lea rsi, [sa_struct]
-    mov rdx, 0
-    mov r10, 8
-    mov rax, 13
-    syscall
+    call init_env
+    call setup_board
 
-    mov rdi, 20             ;# SIGTSTP (CTRL+Z)
-    mov rax, 13
-    syscall
-
-    call clear_screen
-
-    sub rsp, 5
-
-    mov dword [rsp], "hola"
-    mov byte[rsp-4], `\0`
-    lea rdi, [rsp]
-    mov rsi, 4
-    call _write
-
-    add rsp, 5
-
-    mov rsi, 15
-    mov rdx, 3
-    call _write_to_screen
-
+    sub rsp, 1      ; User input buffer
     .infinity:
-        pause
-        jmp .infinity
+        call sleep
+
+        ; Read user input
+        mov rax, 0
+        mov rdi, 0
+        mov rsi, rsp
+        mov rdx, 1
+        syscall
+
+        mov r15, rax    
+        test r15, r15
+        jz .continue_loop   ; No input?
+
+        ; Do smth with the input here...
+        
+        ; Write input immediately after ;)
+        mov rax, 1
+        mov rdi, 1
+        mov rsi, read_res
+        mov rdx, read_res_len
+        syscall
+
+        mov rdi, 1
+        mov rsi, rsp
+        mov rdx, r15
+        mov rax, 1
+        syscall
+
+        .continue_loop:
+            jmp .infinity
+
+; Initializes the terminal environment:
+;   - Signal handling (CTRL+C, CTRL+Z)
+;   - Disable terminal buffering and echoing
+; Arguments:
+;   None
+; Return:
+;   None
+init_env:
+    ; sys_rt_sigaction
+    mov rax, 13             
+    mov rdi, 2              ; SIGINT (CTRL+C)
+    lea rsi, [sa_struct]
+    mov rdx, 0              ; Don't wan no oldact
+    mov r10, 8
+    syscall
+
+    ; sys_rt_sigaction
+    mov rax, 13             ; SIGTSTP (CTRL+Z)
+    mov rdi, 20
+    syscall
+    
+    call modify_termios
+
+    ret
+
+; Sleeps the amount of time specified in the timespec_struct's tv_nsec field.
+; Arguments:
+;   None
+; Return:
+;   None
+sleep:
+    ; sys_nanosleep
+    mov rax, 35
+    lea rdi, [timespec_struct]
+    mov rsi, 0
+    syscall
+
+    ret
 
 exit_handler:
-    call clear_screen
     call restore_screen
 
     mov rdi, 0
@@ -67,183 +121,72 @@ exit_handler:
     syscall
 
 exit_restorer:
-    ;# rt_sigreturn
+    ; rt_sigreturn
     mov rax, 15
     syscall
     ret
 
-clear_screen:
-    ;# write (clear screen)
-    mov rdi, 1
-    lea rsi, [clear_seq]
-    mov rdx, clear_len 
-    mov rax, 1
+restore_screen:
+    %define TCSETS          0x5402
+
+    ; sys_ioctl
+    mov rax, 16
+    mov rdi, 0
+    mov rsi, TCSETS
+    mov rdx, termios_struct_og
     syscall
 
-    ret
-
-restore_screen:
-    ;# write
+    mov rax, 1
     mov rdi, 1
     lea rsi, [return_seq]
     mov rdx, return_len 
-    mov rax, 1
     syscall
 
     ret
 
+; Modify the terminal behavior using the termios struct. Disables two flags:
+;   - ICANON: read keypresses immediately 
+;   - ECHO: do not echo received characters
+; Arguments:
+;   None
+; Return:
+;   rax - Success (0) or error (1)
+modify_termios:
+    %define TCGETS          0x5401
+    %define TCSETS          0x5402
+    %define ICANON          0x0002
+    %define ECHO            0x0008
+    %define VTIME_OFFSET    5
+    %define VMIN_OFFSET     6
 
-;# =======  Helpers  ======================================================== #
+    ; Get current settings via ioctl
+    mov rdi, 0
+    mov rsi, TCGETS
+    mov rdx, termios_struct_og
+    mov rax, 16
+    syscall
 
-;#  Writes the given str to the screen at (X,Y), where (0,0) is the top-left
-;#  corner. We'll use the `\x1b[Y;XH` cursor control sequence to position it.
-;#  Arguments:
-;#    rdi - Pointer to the str buffer
-;#    rsi - X as an integer
-;#    rdx - Y as an integer
-;#  Return:
-;#    None
-_write_to_screen:
-    ;# terminal dimensions don't realistically exceed (999, 999)
-    cmp rsi, 999
-    ja .error
-    cmp rdx, 999
-    ja .error
+    ; Copy original in 8 chunks of 8 bytes each
+    lea rsi, [termios_struct_og]
+    lea rdi, [termios_struct_mod]
+    mov rcx, 8      ; 64 bytes / 8
+    rep movsq
 
-    ;# --- PROLOGUE ---
-    ;# stack frame for the function
-    push rbp
-    mov rbp, rsp
-    sub rsp, 11                 ;# X (3B) + Y (3B) + `\x1b`, `[`, `;`, `H` + \0
+    ; Disable flags in c_lflag
+    mov eax, [termios_struct_mod + 12]  ; offset
+    and eax, ~(ICANON | ECHO)           ; bitwise AND NOT
+    mov [termios_struct_mod + 12], eax
 
-    push r12
-    push rsi
+    ; Set VMIN and VTIME to 0 for non-blocking polling
+    mov rax, 17                         ; c_cc offset
+    mov byte [termios_struct_mod + rax + VTIME_OFFSET], 0
+    mov byte [termios_struct_mod + rax + VMIN_OFFSET], 0
 
-    mov byte [rbp-11], `\x1b`
-    mov byte [rbp-10], `[`
-
-    mov rdi, rdx                ;# Y
-    lea rsi, [rbp-9]
-    call _itoa
-
-    mov r12, rax                ;# Y str len
-    mov byte [rbp-9+r12], `;`
-
-    pop rdi                     ;# X
-    lea rsi, [rbp-8+r12]        ;# 8 accounts for the ;
-    call _itoa
-
-    add r12, rax                ;# Y + X str len
-    mov byte [rbp-8+r12], `H`
-
-    lea rdi, [rbp-11]
-    lea rsi, [r12+5]
-    xor rdx, rdx
-    call _write
-    
-    sub rsp, 3
-    mov dword [rbp-14], "Hell"
-    mov dword [rbp-10], "o, W"
-    mov dword [rbp-6], "orld"
-    mov byte [rbp-2], "!"
-    mov byte[rbp-1], `\0`
-    lea rdi, [rbp-14]
-    mov rsi, 14
-    call _write
-
-    ;# cleanup stack
-    pop r12
-    mov rsp, rbp
-    pop rbp
+    ; Set new settings via ioctl
+    mov rdi, 0
+    mov rsi, TCSETS
+    mov rdx, termios_struct_mod
+    mov rax, 16
+    syscall
 
     ret
-
-    .error:
-        call restore_screen
-
-        mov rdi, error_str_cords
-        mov rsi, error_str_cords_len
-        mov rdx, 1
-        call _write
-
-        mov rdi, 1
-        mov rax, 60
-        syscall
-
-;#  Converts an integer into its ASCII representation
-;#  Arguments:
-;#    rdi - Integer
-;#    rsi - Pointer to the caller-allocated buffer
-;#  Return:
-;#    rax - Length of the generated string
-_itoa:
-    mov rax, rdi
-    mov rbx, 10
-    xor r8, r8        ;# str ptr
-    xor r9, r9        ;# pushed digits
-
-    .get_digits:
-        xor rdx, rdx
-        div rbx
-
-        push rdx
-        inc r9
-
-        test rax, rax
-        jnz .get_digits
-
-    mov rax, r9        ;# str len (ret value)
-
-    .digit_to_ascii:
-        pop rbx         ;# retrieves digits in correct order
-        dec r9
-
-        lea rcx,  [rbx + '0']
-        mov byte [rsi + r8], cl
-        inc r8
-
-        test r9, r9
-        jnz .digit_to_ascii
-
-    mov byte [rsi + r8], 0x0   ;# null terminator
-    ret
-
-;#  Writes the given str to stdout with a new line
-;#  Arguments:
-;#    rdi - Pointer to the str buffer
-;#    rsi - Length
-;#    rdx - Wether to print newline (1) or not (0)
-;#  Return:
-;#    None
-_write:
-    mov r8, rdi
-    mov r9, rsi
-    xor r10, r10
-
-    cmp rdx, 1
-    jne .default_val
-    mov r10, 1
-
-    .default_val:
-        mov rdi, 1
-        mov rsi, r8
-        mov rdx, r9
-        mov rax, 1
-        syscall
-
-        test r10, r10
-        jz .exit
-
-        dec rsp
-        mov byte [rsp], `\n`
-
-        mov rdi, 1
-        mov rsi, rsp
-        mov rdx, 1
-        mov rax, 1
-        syscall
-
-        inc rsp
-
-    .exit:
-        ret
