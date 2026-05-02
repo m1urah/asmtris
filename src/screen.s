@@ -1,4 +1,4 @@
-global setup_board
+global init_board
 extern write_to_screen, strlen
 default rel
 
@@ -50,7 +50,7 @@ section .rodata
 
     panel_main:
         db 22
-        db 25
+        db 24
         db 1
         db "┏━━━━━━━━━━━Tetris━━━━━━━━━━━┓", 0
         db "┃                            ┃", 0  ;# Row 20 (Top)
@@ -78,13 +78,13 @@ section .rodata
 
 section .text
 
-; Entrypoint for the screen module. Setups the board in the alternate buffer by
-; cleaning the screen, and placing all panels.
+; Setups the board in the alternate buffer by cleaning the screen,
+; and placing all initial panels.
 ; Arguments:
 ;   None
 ; Return:
 ;   None
-setup_board:
+init_board:
     ; Enter alternate buffer and clear screen
     mov rax, 1
     mov rdi, 1
@@ -166,6 +166,5 @@ _draw_panel:
         pop r13
         pop r14
         pop r15
-        pop rbp
 
         ret

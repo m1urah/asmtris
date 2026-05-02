@@ -1,5 +1,5 @@
 global _start
-extern setup_board
+extern init_board, process_input, print_board, test_board
 default rel
 
 section .rodata
@@ -39,9 +39,10 @@ section .bss
 section .text
 _start:
     call init_env
-    call setup_board
+    call init_board
+    call test_board
 
-    sub rsp, 1      ; User input buffer
+    sub rsp, 3      ; User input buffer
     .infinity:
         call sleep
 
@@ -49,7 +50,7 @@ _start:
         mov rax, 0
         mov rdi, 0
         mov rsi, rsp
-        mov rdx, 1
+        mov rdx, 3
         syscall
 
         mov r15, rax    
@@ -57,21 +58,15 @@ _start:
         jz .continue_loop   ; No input?
 
         ; Do smth with the input here...
+        cmp byte [rsp], "q"
+        je exit_handler
         
-        ; Write input immediately after ;)
-        mov rax, 1
-        mov rdi, 1
-        mov rsi, read_res
-        mov rdx, read_res_len
-        syscall
-
-        mov rdi, 1
-        mov rsi, rsp
-        mov rdx, r15
-        mov rax, 1
-        syscall
+        mov rdi, rsp
+        mov rsi, r15
+        call process_input
 
         .continue_loop:
+            call print_board
             jmp .infinity
 
 ; Initializes the terminal environment:

@@ -15,15 +15,18 @@ section .text
 ; Return:
 ;   rax - Number of bytes written
 write_to_screen:
+    push rbx
+    mov rbx, r10
+
     ; Terminal dimensions don't realistically exceed (999, 999)
     cmp rdx, 999
     ja .error
-    cmp r10, 999
+    cmp rbx, 999
     ja .error
 
     cmp rdx, 1
     jb .error
-    cmp r10, 1
+    cmp rbx, 1
     jb .error
 
     ; === PROLOGUE ===
@@ -40,25 +43,25 @@ write_to_screen:
     mov byte [rbp-10], `\x1b`
     mov byte [rbp-9], `[`
 
-    mov rdi, r10                ; Y coordinate
+    mov rdi, rbx                ; Y coordinate
     lea rsi, [rbp-8]
     call _itoa
 
-    mov r10, rax                ; Y str len
-    mov byte [rbp-8+r10], `;`
+    mov rbx, rax                ; Y str len
+    mov byte [rbp-8+rbx], `;`
 
     pop rdi                     ; X coordinate (rdx in stack)
-    lea rsi, [rbp-7+r10]        ; 8 accounts for the `;`
+    lea rsi, [rbp-7+rbx]        ; 8 accounts for the `;`
     call _itoa
 
-    add r10, rax                ; Y + X str len
-    mov byte [rbp-7+r10], `H`
+    add rbx, rax                ; Y + X str len
+    mov byte [rbp-7+rbx], `H`
 
     ; Print the ANSI escape string to position cursor
     mov rax, 1
     mov rdi, 1
     lea rsi, [rbp-10]
-    lea rdx, [r10+4]
+    lea rdx, [rbx+4]
     syscall
 
     cmp rax, rdx                ; null terminator is not written
@@ -75,9 +78,11 @@ write_to_screen:
     mov rsp, rbp
     pop rbp
 
+    pop rbx
     ret
 
     .error:
+        pop rbx
         mov rax, 0
         ret
 
@@ -124,32 +129,32 @@ strlen:
 ;   rax - Length of the generated string
 _itoa:
     mov rax, rdi
-    mov rbx, 10
-    xor r8, r8          ; str ptr
-    xor r9, r9          ; Pushed digits
+    mov r9, 10
+    xor r10, r10          ; str ptr
+    xor r11, r11          ; Pushed digits
 
     .get_digits:
         xor rdx, rdx
-        div rbx
+        div r9
 
         push rdx
-        inc r9
+        inc r11
 
         test rax, rax
         jnz .get_digits
 
-    mov rax, r9         ; str len (ret value)
+    mov rax, r11         ; str len (ret value)
 
     .digit_to_ascii:
-        pop rbx         ; Retrieves digits in correct order
-        dec r9
+        pop r9         ; Retrieves digits in correct order
+        dec r11
 
-        lea rcx,  [rbx + '0']
-        mov byte [rsi + r8], cl
-        inc r8
+        lea rcx,  [r9 + '0']
+        mov byte [rsi + r10], cl
+        inc r10
 
-        test r9, r9
+        test r11, r11
         jnz .digit_to_ascii
 
-    mov byte [rsi + r8], 0x0
+    mov byte [rsi + r10], 0x0
     ret
