@@ -1,6 +1,9 @@
 global _start
-extern init_board, process_input, print_board, test_board
+extern init_board, process_input, print_board, move_piece, apply_gravity
+extern GAME_BOARD_WIDTH, game_board
 default rel
+
+MOVE_PIECE_FREQ     equ 30  ; 1 every 30 FPS
 
 section .rodata
     ; =======  STRUCTS  ==================================================== #
@@ -40,32 +43,43 @@ section .text
 _start:
     call init_env
     call init_board
-    call test_board
 
-    sub rsp, 3      ; User input buffer
+    ; Calculate start of game_board's visible zone (first 4 lines are hidden)
+    lea r15, [game_board]                   ; RIP-relative load
+    mov r14, GAME_BOARD_WIDTH
+    lea r15, [r15 + r14 * 4]   ; NASM calculates the imm
+    mov r14, MOVE_PIECE_FREQ
+
+    sub rsp, 3                              ; User input buffer
     .infinity:
         call sleep
 
-        ; Read user input
-        mov rax, 0
-        mov rdi, 0
-        mov rsi, rsp
-        mov rdx, 3
-        syscall
+        dec r14
+        jnz .read_user_input
 
-        mov r15, rax    
-        test r15, r15
-        jz .continue_loop   ; No input?
+        mov r14, MOVE_PIECE_FREQ  ; Move active piece down every second or
+        call apply_gravity          ; spawn a new one
 
-        ; Do smth with the input here...
-        cmp byte [rsp], "q"
-        je exit_handler
-        
-        mov rdi, rsp
-        mov rsi, r15
-        call process_input
+        .read_user_input:
+            mov rax, 0
+            mov rdi, 0
+            mov rsi, rsp
+            mov rdx, 3
+            syscall
+
+            mov r13, rax    
+            test r13, r13
+            jz .continue_loop   ; No input?
+
+            cmp byte [rsp], "q"
+            je exit_handler
+            
+            mov rdi, rsp
+            mov rsi, r13
+            call process_input
 
         .continue_loop:
+            mov rdi, r15
             call print_board
             jmp .infinity
 

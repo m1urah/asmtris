@@ -1,9 +1,9 @@
-global process_input, print_board, test_board
-global GAME_BOARD_WIDTH
+global process_input, move_piece, apply_gravity
+global GAME_BOARD_WIDTH, game_board
 default rel
 
 GAME_BOARD_WIDTH        equ 13
-GAME_BOARD_HEIGHT       equ 20
+GAME_BOARD_HEIGHT       equ 25  ; 4 first lines = hidden (spawn) zone
 
 section .rodata
     ; === TETROMINOS ===
@@ -15,47 +15,56 @@ section .rodata
         db 4            ; Bounding box height
         db 4            ; Initial X
         db 0            ; Initial Y
-        db 16           ; Size of array (array length)
         db 'i'          ; Piece character
+        db 16           ; Size of array (array length)
         db 0, 0, 0, 0   ; Array data (1 for solid, 0 for empty)
         db 1, 1, 1, 1
         db 0, 0, 0, 0
         db 0, 0, 0, 0
         
     piece_s:
-        db 3, 3, 5, 0, 9, 's'
+        db 3, 3, 5, 0, 's', 9
         db 0, 1, 1
         db 1, 1, 0
         db 0, 0, 0
         
     piece_z:
-        db 3, 3, 5, 0, 9, 'z'
+        db 3, 3, 5, 0, 'z', 9
         db 1, 1, 0
         db 0, 1, 1
         db 0, 0, 0
         
     piece_l:
-        db 3, 3, 5, 0, 9, 'l'
+        db 3, 3, 5, 0, 'l', 9
         db 0, 0, 1
         db 1, 1, 1
         db 0, 0, 0
         
     piece_j:
-        db 3, 3, 5, 0, 9, 'j'
+        db 3, 3, 5, 0, 'j', 9
         db 1, 0, 0
         db 1, 1, 1
         db 0, 0, 0
         
     piece_t:
-        db 3, 3, 5, 0, 9, 't'
+        db 3, 3, 5, 0, 't', 9
         db 0, 1, 0
         db 1, 1, 1
         db 0, 0, 0
 
     piece_o:
-        db 2, 2, 5, 0, 4, 'o'
+        db 2, 2, 5, 0, 'o', 4
         db 1, 1
         db 1, 1
+
+    piece_selector:
+        dq piece_i
+        dq piece_s
+        dq piece_z
+        dq piece_l
+        dq piece_j
+        dq piece_t
+        dq piece_o
 
 section .data
     ; Logical game board. Possible values:
@@ -63,10 +72,8 @@ section .data
     ;   - o, i, s, z, l, j, t: identifies part of a piece. Represented as:
     ;       oo  iiii   ss  zz     l  j      t 
     ;       oo        ss    zz  lll  jjj  ttt
-    game_board              times 260 db 0x20       ; 13 cols x 20 lines
+    game_board              times 312 db 0x20       ; 13 cols x 24 lines
     game_board_len          equ $-game_board
-
-    spawn_piece             db 0                    ; Wether to spawn (1) a new piece on the board
 
 section .bss
     ; Tracks the active piece:
@@ -112,18 +119,115 @@ process_input:
 
     cmp eax, `\e[D`
     je .do_left
-    cmp eax, `^[[C`
+    cmp eax, `\e[C`
     je .do_right
-    cmp eax, `^[[A`
+    cmp eax, `\e[A`
     je .do_up
-    cmp eax, `^[[B`
+    cmp eax, `\e[B`
     je .do_down
 
-    .do_left:
-    .do_right:
-    .do_up:
-    .do_down:
+    .do_left:   ; (0, -1)
+        mov rdi, 0
+        mov rsi, -1
+        jmp .apply_move
+
+    .do_right:  ; (0, 1)
+        mov rdi, 0
+        mov rsi, 1
+        jmp .apply_move
+
+    .do_up:     ; TBD -> rotate
+        jmp .done
+
+    .do_down:   ; (1, 0)
+        mov rdi, 1
+        mov rsi, 0
+
+    .apply_move:
+        call move_piece
+
     .done:
+        ret
+
+; =======  Gravity  ========================================================= #
+
+; Attempts to move the active piece one position down. If the movement
+; fails, the piece has either hit the bottom or a stack of blocks, which
+; prompts a new piece to be spawned.
+; Arguments:
+;   None
+; Return:
+;   None
+apply_gravity:
+    ; At the start of the game there's no piece, i.e. no width (1st byte) or height (2nd)
+    cmp word [active_piece], 0x0101
+    jb .spawn
+
+    mov rdi, 1
+    xor rsi, rsi
+    call move_piece     ; Move 1 down (1, 0)
+
+    test rax, rax
+    jnz .return         ; Piece moved, no need to spawn a new one
+
+    .spawn:
+        call _spawn_piece
+
+    .return:
+        ret
+
+; Spawns a new piece at the center of the board's hidden zone. The piece is
+; chosen randomly using the sys_getrandom syscall.
+; Arguments:
+;   None
+; Return:
+;   None
+_spawn_piece:
+    ; 1. Get random byte
+    sub rsp, 1
+
+    mov rax, 318        ; sys_getrandom
+    mov rdi, rsp
+    mov rsi, 1
+    xor rdx, rdx
+    syscall
+
+    cmp rax, 1          ; error (used only for jne)
+    jne .return
+
+    ; 2. Get piece base on 0-6 index
+    mov r8, 7
+
+    movzx eax, byte [rsp]
+    xor rdx, rdx
+    div r8
+    mov rax, rdx
+
+    add rsp, 1
+
+    lea r8, [piece_selector]    ; We cannot combine both instructions because of
+    mov r9, [r8 + rax * 8]      ; RIP-relative addressing
+
+    ; 3. Set new values in active_piece
+    %assign i 0
+
+    %rep 6
+        movzx r8d, byte [r9 + i]
+        mov byte [active_piece + i], r8b
+        %assign i i + 1
+    %endrep
+    
+    ; r8 = array length (min = 4)
+    ; offset by 5 -> 5 + arr_length = final byte
+    .set_array_data:
+        movzx r10d, byte [r9 + 5 + r8]
+        mov byte [active_piece + 5 + r8], r10b
+
+        dec r8
+        jnz .set_array_data
+
+    .return:
+        ret
 
 
 ; =======  Piece Movement  ================================================== #
@@ -169,7 +273,7 @@ move_piece:
         mov [active_piece + 2], r14b
         mov [active_piece + 3], r15b
 
-        movzx edi, [active_piece + 4]       ; Piece's char
+        movzx edi, byte [active_piece + 4]  ; Piece's char
         call _modify_piece_on_board
 
     mov rax, r13

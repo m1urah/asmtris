@@ -1,11 +1,11 @@
-global init_board
+global init_board, print_board
 extern GAME_BOARD_WIDTH
 default rel
 
 TERMINAL_BOARD_WIDTH    equ 26
 TERMINAL_BOARD_HEIGHT   equ 20
 TERMINAL_BOARD_INIT_X   equ 26
-TERMINAL_BOARD_INIT_Y   equ 26
+TERMINAL_BOARD_INIT_Y   equ 2
 
 section .rodata
     ;# Enter alternate buffer -> clear screen -> hide cursor
@@ -210,13 +210,18 @@ _strlen:
 ; Return:
 ;   None
 print_board:
-    movzx r15, TERMINAL_BOARD_INIT_X        ; Initial X
-    movzx r14, TERMINAL_BOARD_INIT_Y        ; Initial Y
+    push r15
+    push r14
+    push r13
+    push r12
+
+    mov r15, TERMINAL_BOARD_INIT_X      ; Initial X
+    mov r14, TERMINAL_BOARD_INIT_Y      ; Initial Y
     
     mov r13, r14
-    add r13b, TERMINAL_BOARD_HEIGHT         ; End Y = Y + height
+    add r13, TERMINAL_BOARD_HEIGHT      ; End Y = Y + height
 
-    lea r12, rdi                            ; src ptr
+    mov r12, rdi                        ; src ptr
 
     .print_next_line:
         cmp r14, r13
@@ -234,6 +239,10 @@ print_board:
         jmp .print_next_line
 
     .return:
+        pop r12
+        pop r13
+        pop r14
+        pop r15
         ret
 
 ; Prints a single line from the game board buffer to the screen. To scale the
@@ -248,8 +257,8 @@ print_board:
 ;   r10 - Y as an integer
 _print_board_line:
     push r15
-    movzx r15, TERMINAL_BOARD_WIDTH ; buffer size
-    movzx rcx, GAME_BOARD_WIDTH     ; count (width)
+    mov r15, TERMINAL_BOARD_WIDTH   ; buffer size
+    mov rcx, GAME_BOARD_WIDTH       ; count (width)
 
     sub rsp, r15
 
