@@ -1,11 +1,17 @@
-global init_board, print_board
-extern GAME_BOARD_WIDTH
+global init_board, update_screen
+extern GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
+extern MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
+extern game_board, score, level, lines
 default rel
 
 TERMINAL_BOARD_WIDTH    equ 26
 TERMINAL_BOARD_HEIGHT   equ 20
 TERMINAL_BOARD_INIT_X   equ 26
 TERMINAL_BOARD_INIT_Y   equ 2
+
+STATS_STAT_START_X      equ 14  ; Max 6 chars per stat
+STATS_STAT_START_Y      equ 2
+STATS_VALUE_LEN         equ 6
 
 section .rodata
     ;# Enter alternate buffer -> clear screen -> hide cursor
@@ -25,9 +31,9 @@ section .rodata
         db 1    ; line (Y)
         ; utf-8 chars are multi-byte, null terminator marks end of row
         db "┏━━━━━━━Stats━━━━━━━┓", 0
-        db "┃ Score       10420 ┃", 0
-        db "┃ Level           5 ┃", 0
-        db "┃ Lines          42 ┃", 0
+        db "┃ Score           X ┃", 0
+        db "┃ Level           X ┃", 0
+        db "┃ Lines           X ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_next:
@@ -78,7 +84,7 @@ section .rodata
 section .text
 
 
-; =======  Board Initialization  ============================================ #
+; =======  Board Initialization  ============================================ ;
 
 ; Setups the board in the alternate buffer by cleaning the screen,
 ; and placing all initial panels.
@@ -201,15 +207,30 @@ _strlen:
         ret
 
 
-; =======  Board Rendering  ================================================= #
+; =======  Board Rendering  ================================================= ;
 
-; Updates the screen with the logical board. To scale the visual output, each
-; byte from the buffer is duplicated horizontally when rendered.
+; Clear the previous frame and update the screen with the latest game state,
+; including the game board, current score, lines cleared, and current level.
 ; Arguments:
-;   rdi - Pointer to the start of the game_board buffer
+;   None
 ; Return:
 ;   None
-print_board:
+update_screen:
+    call _print_board
+    call _set_score
+    call _set_level
+    call _set_lines
+
+    ret
+
+; Translates the 1D logical game board array into characters and renders them
+; to the screen. To scale the visual output, each byte from the buffer is
+; duplicated horizontally when rendered.
+; Arguments:
+;   None
+; Return:
+;   None
+_print_board:
     push r15
     push r14
     push r13
@@ -221,7 +242,12 @@ print_board:
     mov r13, r14
     add r13, TERMINAL_BOARD_HEIGHT      ; End Y = Y + height
 
-    mov r12, rdi                        ; src ptr
+    ; Calculate start of game_board's visible zone (first N lines are hidden)
+    mov rax, GAME_BOARD_WIDTH
+    imul rax, rax, NUMBER_OF_HIDDEN_ROWS
+
+    lea r12, [game_board]
+    lea r12, [r12 + rax]                ; src ptr
 
     .print_next_line:
         cmp r14, r13
@@ -297,8 +323,103 @@ _print_board_line:
         mov rax, rbx
         ret
 
+; Renders the current game score to its designated place on the screen.
+; Arguments:
+;   None
+; Return:
+;   None
+_set_score:
+    lea r8, [score]
+    mov edi, dword [r8]
 
-; =======  Utils  ======================================================== #
+    mov rsi, MAX_SCORE_DIG_LEN
+    mov rdx, STATS_STAT_START_Y
+    call _set_stat
+    ret
+
+_set_level:
+    lea r8, [level]
+    mov edi, dword [r8]
+
+    mov rsi, MAX_LEVEL_DIG_LEN
+    mov rdx, STATS_STAT_START_Y
+    add rdx, 1
+    call _set_stat
+    ret
+
+_set_lines:
+    lea r8, [lines]
+    mov edi, dword [r8]
+
+    mov rsi, MAX_LINES_DIG_LEN
+    mov rdx, STATS_STAT_START_Y
+    add rdx, 2
+    call _set_stat
+    ret
+
+; Renders the given stat value to the screen.
+; Arguments:
+;   rdi - Stat value (score, level, or lines)
+;   rsi - Max digit count (see board.s MAX_*_DIG_LEN)
+;   rdx - Start row
+; Return:
+;   None
+_set_stat:
+    push r15
+    push r14
+    push r13
+    push r12
+
+    mov r15, rsi
+    mov r14, rdx
+
+    sub rsp, r15
+
+    ; rdi already set
+    mov rsi, rsp
+    call _itoa              ; Convert score to str
+
+    mov r13, rax            ; str len
+    mov r12, STATS_VALUE_LEN
+    sub r12, r13            ; alignment
+    jz .print_score
+
+    sub rsp, r12
+
+    ; Align score right by adding spaces
+    mov rax, 0x20
+    mov rdi, rsp
+    mov rcx, r12
+    rep stosb
+    
+    mov rdi, rsp
+    mov rsi, r12
+    mov rdx, STATS_STAT_START_X
+    mov r10, r14
+    call write_to_screen
+
+    add rsp, r12
+
+    .print_score:
+        mov rdi, rsp
+        mov rsi, r13
+        mov rdx, STATS_STAT_START_X
+        add rdx, r12
+        mov r10, r14
+        call write_to_screen
+    
+    add rsp, r15
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    ret
+
+_set_next_piece:
+    ret
+
+
+; =======  Utils  =========================================================== ;
 
 ; Writes the given str to the screen at (X,Y), where (1,1) is the top-left
 ; corner. We'll use the `\x1b[Y;XH` cursor control sequence to position it.
