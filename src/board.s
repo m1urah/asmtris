@@ -1,5 +1,6 @@
-global process_input, process_board, spawn_piece
+global process_input, process_board, spawn_piece, choose_next_piece
 global game_board, active_piece, score, level, lines, frames_until_drop
+global next_piece, needs_next_piece_redraw
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 global MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
 extern move_piece, rotate_figure
@@ -7,17 +8,16 @@ default rel
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
-GAME_BOARD_HEIGHT       equ 24  ; 4 first lines = hidden (spawn) zone
-
-LAST_LEVEL              equ 29
+GAME_BOARD_HEIGHT       equ 24      ; 4 first lines = hidden (spawn) zone
 
 MAX_SCORE               equ 999999
-MAX_SCORE_DIG_LEN       equ 6   ; digits
-MAX_LEVEL_DIG_LEN       equ 2
+MAX_SCORE_DIG_LEN       equ 6       ; digits
+MAX_LEVEL_DIG_LEN       equ 3       ; 255
 MAX_LINES               equ 7777
 MAX_LINES_DIG_LEN       equ 4
 
-MOVE_PIECE_FREQ         equ 30  ; 1 every 30 FPS
+MOVE_PIECE_FREQ         equ 30      ; 1 every 30 FPS
+PIECE_STRUCT_MAX_SIZE   equ 22      ; piece_i is current max
 
 section .rodata
     ; === TETROMINOS ===
@@ -89,12 +89,18 @@ section .data
     game_board              times 312 db 0x20       ; 13 cols x 24 lines
     game_board_len          equ $-game_board
 
-    ; Everything is 32-bits for simplicity
     score                   dd 0
-    level                   dd 1
     lines                   dd 0
+    level                   db 0
     
     frames_until_drop       db MOVE_PIECE_FREQ
+    spawn_new_piece         db 1
+    needs_next_piece_redraw db 1
+
+    level_speeds:   ; Lvl 0, 1, 2 ... 29+
+        db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
+        db 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2
+        db 2, 2, 2, 2, 2, 2, 2, 1
 
 section .bss
     ; Tracks the active piece:
@@ -105,7 +111,8 @@ section .bss
     ;   - Offset 4: Piece character
     ;   - Offset 5: Array length
     ;   - Offset 6: Array data (1 for solid, 0 for empty). Size defined by Offset 4
-    active_piece            resb 22     ; Up to 22 chars (piece_i)
+    active_piece            resb PIECE_STRUCT_MAX_SIZE
+    next_piece              resb PIECE_STRUCT_MAX_SIZE
 
 section .text
 
@@ -119,12 +126,15 @@ section .text
 ;   None
 process_input:
     test rsi, rsi
-    jz .done
+    jz .return
 
     ; (X, Y) are set on the top-left corner. Allow movement when piece is partially
     ; visible
     cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS -1    ; Math done by NASM
-    jl .done
+    jl .return
+
+    push r15
+    xor r15, r15        ; Down move?
 
     mov eax, [rdi]      ; Load 4 bytes (even if buffer is smaller)
 
@@ -151,9 +161,11 @@ process_input:
     cmp eax, `\e[B`
     je .do_down
 
+    jmp .done
+
     .do_up:     ; rotate
-        jmp rotate_figure
-        ret
+        call rotate_figure
+        jmp .done
 
     .do_left:   ; (0, -1)
         mov rdi, 0
@@ -168,11 +180,25 @@ process_input:
     .do_down:   ; (1, 0)
         mov rdi, 1
         mov rsi, 0
+        mov r15, 1
 
     .apply_move:
         call move_piece
 
+        ; --- Score Update ---
+        test rax, rax
+        jz .done            ; Move failed, skip score
+
+        test r15, r15
+        jz .done            ; Not a down move, skip score
+
+        mov rdi, 1
+        call update_score
+
     .done:
+        pop r15
+    
+    .return:
         ret
 
 ; Processes the current state of the board to clear lines and updates the
@@ -182,20 +208,26 @@ process_input:
 ; Return:
 ;   None
 process_board:
-    movzx r8d, byte [frames_until_drop]
-    test r8, r8
+    cmp byte [frames_until_drop], 0
     jnz .return
 
-    ; Reset it
+    ; Reset timer
     mov byte [frames_until_drop], MOVE_PIECE_FREQ
 
+    cmp byte [spawn_new_piece], 0
+    jnz .spawn_routine
+
     call apply_gravity
+    ret
 
-    call clear_full_rows
-    test rax, rax
-    jz .return
+    .spawn_routine:
+        call spawn_piece
+        call clear_full_rows
+        mov rdi, rax
+        call update_score   ; No-op if rdi = 0
 
-    call update_score
+        ; Flag that the view needs to update the next piece
+        mov byte [needs_next_piece_redraw], 1
 
     .return:
         ret
@@ -217,18 +249,36 @@ apply_gravity:
     test rax, rax
     jnz .return         ; Piece moved, no need to spawn a new one
 
-    call spawn_piece
+    mov byte [spawn_new_piece], 1
 
     .return:
         ret
 
-; Spawns a new piece at the center of the board's hidden zone. The piece is
-; chosen randomly using the sys_getrandom syscall.
+; Spawns the next piece at its starting (X, Y) coordinates in the hidden zone,
+; then generates a new next piece.
 ; Arguments:
 ;   None
 ; Return:
 ;   None
 spawn_piece:
+    lea rsi, [next_piece]           ; Src index
+    lea rdi, [active_piece]         ; Dst index
+    mov rcx, PIECE_STRUCT_MAX_SIZE  ; How many bytes to copy
+
+    rep movsb
+
+    call choose_next_piece
+    mov byte [spawn_new_piece], 0
+
+    .return:
+        ret
+
+; Randomly selects the next piece using the getrandom syscall. The piece is
+; displayed on the screen and staged for used by spawn_piece.
+;   None
+; Return:
+;   None
+choose_next_piece:
     ; 1. Get random byte
     sub rsp, 1
 
@@ -254,12 +304,12 @@ spawn_piece:
     lea r8, [piece_selector]    ; We cannot combine both instructions because of
     mov r9, [r8 + rax * 8]      ; RIP-relative addressing
 
-    ; 3. Set new values in active_piece
+    ; 3. Set new values in next_piece
     %assign i 0
 
     %rep 6
         movzx r8d, byte [r9 + i]
-        mov byte [active_piece + i], r8b
+        mov byte [next_piece + i], r8b
         %assign i i + 1
     %endrep
     
@@ -267,7 +317,7 @@ spawn_piece:
     ; offset by 5 -> 5 + arr_length = final byte
     .set_array_data:
         movzx r10d, byte [r9 + 5 + r8]
-        mov byte [active_piece + 5 + r8], r10b
+        mov byte [next_piece + 5 + r8], r10b
 
         dec r8
         jnz .set_array_data
@@ -309,13 +359,15 @@ clear_full_rows:
             jae .check_rows_loop
 
     mov rax, r14
+    test rax, rax
+    jz .return
 
-    lea r8, [lines]
-    add word [r8], r14w
+    add [lines], r14w
 
-    pop r14
-    pop r15
-    ret
+    .return:
+        pop r14
+        pop r15
+        ret
 
 ; Checks if given row is completed (no 0x20 bytes).
 ; Arguments:
@@ -404,7 +456,7 @@ _shift_rows_down:
 ;   rdi - Number of cleared lines
 ; Return:
 ;   None
-update_score:
+update_score_lines:
     test rdi, rdi
     jz .return
 
@@ -431,7 +483,22 @@ update_score:
         xor rdx, rdx
         mul rcx                 ; rax = base points * (level + 1)
 
-    mov dword [score], eax
+    mov rdi, rax
+    call update_score
+
+    .return:
+        ret
+
+; Updates the score based on the input number.
+; Arguments:
+;   rdi - The amount of points to add to the score
+; Return:
+;   None
+update_score:
+    test rdi, rdi
+    jz .return
+
+    add dword [score], edi
 
     .return:
         ret

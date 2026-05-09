@@ -1,7 +1,7 @@
 global init_board, update_screen
 extern GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
 extern MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
-extern game_board, score, level, lines
+extern game_board, score, level, lines, next_piece, needs_next_piece_redraw
 default rel
 
 TERMINAL_BOARD_WIDTH    equ 26
@@ -12,6 +12,11 @@ TERMINAL_BOARD_INIT_Y   equ 2
 STATS_STAT_START_X      equ 14  ; Max 6 chars per stat
 STATS_STAT_START_Y      equ 2
 STATS_VALUE_LEN         equ 6
+
+NEXT_PIECE_START_Y      equ 3
+NEXT_PIECE_START_X      equ 63
+NEXT_PIECE_START_X_I    equ 62
+NEXT_PIECE_START_X_O    equ 64
 
 section .rodata
     ;# Enter alternate buffer -> clear screen -> hide cursor
@@ -26,6 +31,7 @@ section .rodata
     ;# === PANELS ===
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_stats:
+        db 21   ; width
         db 5    ; height
         db 1    ; col (X)
         db 1    ; line (Y)
@@ -37,15 +43,16 @@ section .rodata
         db "┗━━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_next:
-        db 5, 56, 1
+        db 20, 6, 56, 1
         db "┏━━━━━━━Next━━━━━━━┓", 0
         db "┃                  ┃", 0
-        db "┃     ████████     ┃", 0
+        db "┃                  ┃", 0
+        db "┃                  ┃", 0
         db "┃                  ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_help:
-        db 8, 56, 8
+        db 21, 8, 56, 9
         db "┏━━━━━━━Help━━━━━━━┓", 0
         db "┃ Left      h, ←   ┃", 0
         db "┃ Right     l, →   ┃", 0
@@ -56,7 +63,7 @@ section .rodata
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_main:
-        db 22, 24, 1
+        db 30, 22, 24, 1
         db "┏━━━━━━━━━━━Tetris━━━━━━━━━━━┓", 0
         db "┃                            ┃", 0  ;# Row 20 (Top)
         db "┃                            ┃", 0
@@ -134,11 +141,11 @@ _draw_panel:
     xor r14, r14
     xor r15, r15
 
-    mov r12b, byte [rdi]        ; height
-    mov r13b, byte [rdi+1]      ; col (X)
-    mov r14b, byte [rdi+2]      ; line (Y)
+    mov r12b, byte [rdi+1]      ; height
+    mov r13b, byte [rdi+2]      ; col (X)
+    mov r14b, byte [rdi+3]      ; line (Y)
     add r12b, r14b              ; end_Y = height + starting line (Y)
-    lea r15, [rdi+3]            ; data
+    lea r15, [rdi+4]            ; data
     
     .print_lines:
         mov rdi, r15
@@ -221,7 +228,15 @@ update_screen:
     call _set_level
     call _set_lines
 
-    ret
+    cmp byte [needs_next_piece_redraw], 1
+    jne .return
+
+    ; If dirty, redraw and clean the flag
+    call _set_next_piece
+    mov byte [needs_next_piece_redraw], 0
+
+    .return:
+        ret
 
 ; Translates the 1D logical game board array into characters and renders them
 ; to the screen. To scale the visual output, each byte from the buffer is
@@ -292,9 +307,6 @@ _print_board_line:
     mov r11, rdi                    ; src pointer
 
     .dup_byte:
-        test rcx, rcx
-        jz .done
-
         mov al, [r11]
         mov ah, al                  ; dup byte        
         mov [r10], ax
@@ -302,26 +314,26 @@ _print_board_line:
         inc r11
         add r10, 2
         dec rcx
-        jmp .dup_byte
+        jnz .dup_byte
 
-    .done:
-        mov rbx, r11
-        sub rbx, rdi                ; We return this (bytes read: src_end - src_start)
 
-        mov rdi, rsp
-        mov rax, r10
-        mov r10, rdx
-        mov rdx, rsi
+    mov rbx, r11
+    sub rbx, rdi                ; We return this (bytes read: src_end - src_start)
 
-        mov rsi, rax
-        sub rsi, rsp                ; length = dst_end - dst_start
-        call write_to_screen
-        
-        add rsp, r15                ; Restore stack
-        pop r15
+    mov rdi, rsp
+    mov rax, r10
+    mov r10, rdx
+    mov rdx, rsi
 
-        mov rax, rbx
-        ret
+    mov rsi, rax
+    sub rsi, rsp                ; length = dst_end - dst_start
+    call write_to_screen
+    
+    add rsp, r15                ; Restore stack
+    pop r15
+
+    mov rax, rbx
+    ret
 
 ; Renders the current game score to its designated place on the screen.
 ; Arguments:
@@ -329,17 +341,20 @@ _print_board_line:
 ; Return:
 ;   None
 _set_score:
-    lea r8, [score]
-    mov edi, dword [r8]
+    mov edi, dword [score]
 
     mov rsi, MAX_SCORE_DIG_LEN
     mov rdx, STATS_STAT_START_Y
     call _set_stat
     ret
 
+; Renders the current level to its designated place on the screen.
+; Arguments:
+;   None
+; Return:
+;   None
 _set_level:
-    lea r8, [level]
-    mov edi, dword [r8]
+    movzx edi, byte [level]
 
     mov rsi, MAX_LEVEL_DIG_LEN
     mov rdx, STATS_STAT_START_Y
@@ -347,9 +362,13 @@ _set_level:
     call _set_stat
     ret
 
+; Renders the number of cleared lines to its designated place on the screen.
+; Arguments:
+;   None
+; Return:
+;   None
 _set_lines:
-    lea r8, [lines]
-    mov edi, dword [r8]
+    mov edi, dword [lines]
 
     mov rsi, MAX_LINES_DIG_LEN
     mov rdx, STATS_STAT_START_Y
@@ -415,9 +434,143 @@ _set_stat:
     pop r15
     ret
 
+; Renders the next piece to the screen.
+; Arguments:
+;   None
+; Return:
+;   None
 _set_next_piece:
-    ret
+    call _clear_next_piece_panel
 
+    push rbx
+
+    movzx ebx, byte [next_piece + 1]    ; Height
+    test rbx, rbx                       ; Height != 0
+    jz .return
+
+    cmp bl, byte [next_piece]           ; Height == Width
+    jne .return
+
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbp
+
+    mov r12, rbx                        ; Height counter
+    ; movzx r12d, byte [next_piece + 4]   ; Character
+    lea r13, [next_piece + 6]           ; Array pointer
+    mov r14, NEXT_PIECE_START_Y         ; Y index
+
+    sub rsp, rbx
+    sub rsp, rbx
+
+    cmp rbx, 4
+    mov r15, NEXT_PIECE_START_X_I
+    je .outer_loop_start
+
+    cmp rbx, 2
+    mov r15, NEXT_PIECE_START_X_O
+    je .outer_loop_start
+
+    mov r15, NEXT_PIECE_START_X
+
+    .outer_loop_start:
+        mov rcx, rbx
+        mov rbp, rsp
+
+        .inner_loop_start:
+            ; mov rdx, r12
+            movzx rdx, byte [next_piece + 4]
+            cmp byte [r13], 1
+
+            mov rsi, 0x20
+            cmovne rdx, rsi             ; Byte not set -> not piece part
+
+            mov byte [rbp], dl
+            mov byte [rbp+1], dl
+
+            add rbp, 2
+            inc r13
+            dec rcx
+            jnz .inner_loop_start
+
+    .outer_loop_end:
+        mov rdi, rsp
+        mov rsi, rbx
+        add rsi, rbx
+        mov rdx, r15
+        mov r10, r14
+        call write_to_screen
+
+        inc r14
+        dec r12
+        jnz .outer_loop_start
+    
+    add rsp, rbx
+    add rsp, rbx
+    
+    pop rbp
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    
+    .return:
+        pop rbx
+        ret
+
+; Prepares the Next panel by removing the previous piece.
+; Arguments:
+;   None
+; Return:
+;   None
+_clear_next_piece_panel:
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+
+    ; Remove left/right top/bottom delimiters
+    movzx r15d, byte [panel_next]       ; Width
+    sub r15, 2
+    movzx r14d, byte [panel_next + 1]   ; Height
+    sub r14, 2
+
+    ; Set coordinates after delimiters
+    movzx r13d, byte [panel_next + 2]   ; X
+    inc r13
+    movzx r12d, byte [panel_next + 3]   ; Y
+    inc r12
+
+    sub rsp, r15
+
+    ; Create clear str
+    mov rax, 0x20
+    mov rdi, rsp
+    mov rcx, r15
+    rep stosb
+
+    .write_clear_str:
+        mov rdi, rsp
+        mov rsi, r15
+        mov rdx, r13
+        mov r10, r12
+        call write_to_screen
+
+        inc r12
+        dec r14
+        jnz .write_clear_str
+
+    add rsp, r15
+
+    pop rbx
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+    ret
 
 ; =======  Utils  =========================================================== ;
 

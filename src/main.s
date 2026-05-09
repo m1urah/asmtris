@@ -1,5 +1,6 @@
 global _start
 extern init_board, process_input, update_screen, process_board, spawn_piece
+extern choose_next_piece
 extern game_board, frames_until_drop
 extern GAME_BOARD_WIDTH
 default rel
@@ -42,6 +43,8 @@ section .text
 _start:
     call init_env
     call init_board
+
+    call choose_next_piece
     call spawn_piece
 
     sub rsp, 3                      ; User input buffer
