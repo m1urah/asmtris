@@ -1,9 +1,10 @@
-global process_input, process_board, spawn_piece, choose_next_piece
-global game_board, active_piece, score, level, lines, frames_until_drop
+global init_board, process_input, gravity_tick
+global game_board, active_piece, score, level, lines
 global next_piece, needs_next_piece_redraw
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 global MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
-extern move_piece, rotate_figure
+extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets
+extern LOCK_DELAY_VALUE
 default rel
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
@@ -94,7 +95,6 @@ section .data
     level                   db 0
     
     frames_until_drop       db MOVE_PIECE_FREQ
-    spawn_new_piece         db 1
     needs_next_piece_redraw db 1
 
     level_speeds:   ; Lvl 0, 1, 2 ... 29+
@@ -115,6 +115,12 @@ section .bss
     next_piece              resb PIECE_STRUCT_MAX_SIZE
 
 section .text
+
+init_board:
+    call choose_next_piece
+    call spawn_piece
+
+    ret
 
 ; =======  Entrypoint  ====================================================== ;
 
@@ -167,31 +173,31 @@ process_input:
         call rotate_figure
         jmp .done
 
-    .do_left:   ; (0, -1)
-        mov rdi, 0
-        mov rsi, -1
+    .do_left:   ; (-1, 0)
+        mov rdi, -1
+        mov rsi, 0
         jmp .apply_move
 
-    .do_right:  ; (0, 1)
-        mov rdi, 0
-        mov rsi, 1
-        jmp .apply_move
-
-    .do_down:   ; (1, 0)
+    .do_right:  ; (1, 0)
         mov rdi, 1
         mov rsi, 0
+        jmp .apply_move
+
+    .do_down:   ; (0, 1)
+        mov rdi, 0
+        mov rsi, 1
         mov r15, 1
 
     .apply_move:
         call move_piece
 
-        ; --- Score Update ---
         test rax, rax
         jz .done            ; Move failed, skip score
 
         test r15, r15
         jz .done            ; Not a down move, skip score
 
+        ; --- Score Update ---
         mov rdi, 1
         call update_score
 
@@ -201,58 +207,50 @@ process_input:
     .return:
         ret
 
-; Processes the current state of the board to clear lines and updates the
-; score accordingly
+; Attempts to move the active piece one position down. If the lock delay is
+; active and expired, the piece is locked into position, which prompts a new
+; piece to be spawned, clearing full lines and updating the score accordingly.
 ; Arguments:
 ;   None
 ; Return:
 ;   None
-process_board:
-    cmp byte [frames_until_drop], 0
-    jnz .return
+gravity_tick:
+    cmp byte [lock_delay_active], 1
+    jne .continue
 
-    ; Reset timer
-    mov byte [frames_until_drop], MOVE_PIECE_FREQ
+    dec byte [lock_delay]
+    jnz .continue
 
-    cmp byte [spawn_new_piece], 0
-    jnz .spawn_routine
+    ; Disable timer and reset it and stall counter
+    mov byte [lock_resets], 0
+    mov byte [lock_delay_active], 0
+    mov byte [lock_delay], LOCK_DELAY_VALUE
 
-    call apply_gravity
-    ret
+    ; Lock active piece by spawning a new one
+    call spawn_piece
+    call clear_full_rows
 
-    .spawn_routine:
-        call spawn_piece
-        call clear_full_rows
-        mov rdi, rax
-        call update_score   ; No-op if rdi = 0
+    mov rdi, rax
+    call update_score_lines       ; No-op if rdi = 0
 
-        ; Flag that the view needs to update the next piece
-        mov byte [needs_next_piece_redraw], 1
+    ; Flag that the view needs to update the next piece
+    mov byte [needs_next_piece_redraw], 1
 
-    .return:
-        ret
+    .continue:
+        dec byte [frames_until_drop]
+        jnz .return
 
-; =======  Gravity  ========================================================= ;
+        mov byte [frames_until_drop], MOVE_PIECE_FREQ   ; Reset timer
 
-; Attempts to move the active piece one position down. If the movement
-; fails, the piece has either hit the bottom or a stack of blocks, which
-; prompts a new piece to be spawned.
-; Arguments:
-;   None
-; Return:
-;   None
-apply_gravity:
-    mov rdi, 1
-    xor rsi, rsi
-    call move_piece     ; Move 1 down (1, 0)
-
-    test rax, rax
-    jnz .return         ; Piece moved, no need to spawn a new one
-
-    mov byte [spawn_new_piece], 1
+        xor rdi, rdi
+        mov rsi, 1
+        call move_piece     ; Move 1 down (0, 1)
 
     .return:
         ret
+
+
+; =======  New Piece  ======================================================= ;
 
 ; Spawns the next piece at its starting (X, Y) coordinates in the hidden zone,
 ; then generates a new next piece.
@@ -261,17 +259,14 @@ apply_gravity:
 ; Return:
 ;   None
 spawn_piece:
-    lea rsi, [next_piece]           ; Src index
-    lea rdi, [active_piece]         ; Dst index
+    lea rsi, [next_piece]           ; src index
+    lea rdi, [active_piece]         ; dst index
     mov rcx, PIECE_STRUCT_MAX_SIZE  ; How many bytes to copy
 
     rep movsb
 
     call choose_next_piece
-    mov byte [spawn_new_piece], 0
-
-    .return:
-        ret
+    ret
 
 ; Randomly selects the next piece using the getrandom syscall. The piece is
 ; displayed on the screen and staged for used by spawn_piece.
@@ -280,7 +275,7 @@ spawn_piece:
 ;   None
 choose_next_piece:
     ; 1. Get random byte
-    sub rsp, 1
+    sub rsp, 8
 
     mov rax, 318        ; sys_getrandom
     mov rdi, rsp
@@ -298,8 +293,6 @@ choose_next_piece:
     xor rdx, rdx
     div r8
     mov rax, rdx
-
-    add rsp, 1
 
     lea r8, [piece_selector]    ; We cannot combine both instructions because of
     mov r9, [r8 + rax * 8]      ; RIP-relative addressing
@@ -323,6 +316,7 @@ choose_next_piece:
         jnz .set_array_data
 
     .return:
+        add rsp, 8
         ret
 
 
@@ -349,9 +343,12 @@ clear_full_rows:
         test rax, rax
         jz .next_row
 
+        ; --- Line is full ---
         mov rdi, r15
         call _shift_rows_down
         inc r14
+        
+        inc r15                     ; Need to verify r15 again (content was shifted down)
 
         .next_row:
             dec r15

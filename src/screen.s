@@ -1,4 +1,4 @@
-global init_board, update_screen
+global init_screen, update_screen
 extern GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
 extern MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
 extern game_board, score, level, lines, next_piece, needs_next_piece_redraw
@@ -14,6 +14,7 @@ STATS_STAT_START_Y      equ 2
 STATS_VALUE_LEN         equ 6
 
 NEXT_PIECE_START_Y      equ 3
+NEXT_PIECE_START_Y_I    equ 2   ; I is 4 rows long, would overflow
 NEXT_PIECE_START_X      equ 63
 NEXT_PIECE_START_X_I    equ 62
 NEXT_PIECE_START_X_O    equ 64
@@ -99,7 +100,7 @@ section .text
 ;   None
 ; Return:
 ;   None
-init_board:
+init_screen:
     ; Enter alternate buffer and clear screen
     mov rax, 1
     mov rdi, 1
@@ -458,16 +459,17 @@ _set_next_piece:
     push rbp
 
     mov r12, rbx                        ; Height counter
-    ; movzx r12d, byte [next_piece + 4]   ; Character
     lea r13, [next_piece + 6]           ; Array pointer
-    mov r14, NEXT_PIECE_START_Y         ; Y index
 
     sub rsp, rbx
     sub rsp, rbx
 
     cmp rbx, 4
     mov r15, NEXT_PIECE_START_X_I
+    mov r14, NEXT_PIECE_START_Y_I
     je .outer_loop_start
+
+    mov r14, NEXT_PIECE_START_Y
 
     cmp rbx, 2
     mov r15, NEXT_PIECE_START_X_O
@@ -635,7 +637,7 @@ write_to_screen:
     syscall
 
     cmp rax, rdx                ; null terminator is not written
-    jne .error
+    jne .error_post_prologue
 
     ; Print the actual string
     mov rax, 1
@@ -650,6 +652,13 @@ write_to_screen:
 
     pop rbx
     ret
+
+    .error_post_prologue:
+        mov rsp, rbp
+        pop rbp
+        pop rbx
+        mov rax, 0
+        ret
 
     .error:
         pop rbx

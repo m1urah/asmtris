@@ -1,62 +1,155 @@
 global move_piece, rotate_figure
+global lock_delay_active, lock_delay, lock_resets
+global LOCK_DELAY_VALUE
 extern game_board, active_piece
 extern GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT
 default rel
 
+LOCK_DELAY_VALUE        equ 30  ; 0.5 sec at 60fps
+MAX_LOCK_RESETS         equ 15  ; Prevent infinite stalling
+
+section .data
+    lock_delay          db 0    ; Frames
+    lock_delay_active   db 0    ; Active = 1
+    lock_resets         db 0    ; Tracks how many times timer was reset
+
+section .text
+
 ; =======  Piece Movement  ================================================== #
 
 ; Moves the active piece one position (right, left, or down). (0, 0) is not a
-; valid move. This function orchestrates the whole flow:
-;   1. Erase the piece from its current position
-;   2. Call can_move(dx, dy)
-;   3. If yes, update x_pos/y_pos
-;   4. Move the piece at the (possible new) position
+; valid move.
+; If the piece cannot move down, the "lock delay" timer starts, which refers to
+; how many frames a piece waits while on the ground before locking.
 ; Arguments:
-;   rdi - Vertical displacement (dy): 1 for Down, 0 for horizontal moves
-;   rsi - Horizontal displacement (dx): -1 for Left, 1 for Right, 0 for Down
+;   rdi - Horizontal displacement (dx): -1 for Left, 1 for Right, 0 for Down
+;   rsi - Vertical displacement (dy):    1 for Down, 0 for horizontal moves
 ; Return:
-;   rax - Whether the piece was moved (1) or not (0)   
+;   rax - Whether the piece was moved (1) or not (0)
 move_piece:
     push r15
     push r14
     push r13
+    mov r13, 0              ; Piece was not moved
+
+    cmp rdi, rsi
+    je .return
 
     mov r15, rdi
     mov r14, rsi
-    mov r13, 1                              ; Piece was moved
+    mov r13, 1              ; Assume piece will move
+
+    call can_move_piece
+    mov r13, rax            ; Save success (1) or failure (0)
+
+    test r13, r13
+    jz .draw_piece
+
+    ; If success, apply movement offsets. sx needed, coordinates might be negative!!!
+    add byte [active_piece + 2], r15b   ; X
+    add byte [active_piece + 3], r14b   ; Y
+
+    .draw_piece:
+        movzx edi, byte [active_piece + 4]
+        call _modify_piece_on_board
+
+    test r13, r13
+    jz .piece_not_moved
+
+    .piece_moved:
+        cmp byte [lock_delay_active], 1
+        jne .return
+
+        cmp r14, 1      ; Down move?
+        jne .horizontal_reset
+
+        ; Disable timer and reset stall counter on successful down move
+        mov byte [lock_delay_active], 0
+        mov byte [lock_resets], 0
+        jmp .return
+
+    .horizontal_reset:
+        cmp byte [lock_resets], MAX_LOCK_RESETS
+        jge .return     ; Skip reset if limit reached
+
+        inc byte [lock_resets]
+        mov byte [lock_delay], LOCK_DELAY_VALUE
+        jmp .return
+
+    .piece_not_moved:
+        cmp r14, 1
+        jne .return
+
+        ; If the piece couldn't move down, start timer
+        cmp byte [lock_delay_active], 1
+        je .return
+
+        mov byte [lock_delay], LOCK_DELAY_VALUE
+        mov byte [lock_delay_active], 1
+
+    .return:
+        mov rax, r13
+        pop r13
+        pop r14
+        pop r15
+
+        ret
+
+; Check if the active piece can be moved by one position (right, left, or
+; down), (0, 0) is not valid. The active piece is erased from the board before
+; checking for possible movement.
+; Arguments:
+;   rdi - Horizontal displacement (dx): -1 for Left, 1 for Right, 0 for Down
+;   rsi - Vertical displacement (dy):    1 for Down, 0 for horizontal moves
+; Return:
+;   rax - Whether the piece can be moved (1) or not (0)   
+can_move_piece:
+    mov rax, 0                          ; NOT moved
+
+    cmp rdi, rsi                        ; Invalid move
+    je .return
+    cmp rsi, 0
+    jl .return
+
+    push r15
+    push r14
+    mov r15, rdi
+    mov r14, rsi
 
     call _erase_piece_from_board
 
+    movsx r8, byte [active_piece + 2]
+    add r15, r8                         ; target_x = dx + x
+    movsx r9, byte [active_piece + 3]
+    add r14, r9                         ; target_y = dy + y
+
     mov rdi, r15
     mov rsi, r14
-    call _can_move_piece
+    call _can_place_piece
 
-    test rax, rax
-    jnz .draw_piece
-
-    ; Put piece in original position
-    mov r15, 0
-    mov r14, 0
-    mov r13, 0                              ; Piece was NOT moved
-
-    .draw_piece:
-        ; Update coordinates
-        ; sx needed, coordinates might be negative!!!
-        movsx r8, byte [active_piece + 2]   
-        add r14, r8                         ; X
-        movsx r8, byte [active_piece + 3]
-        add r15, r8                         ; Y
-        mov [active_piece + 2], r14b
-        mov [active_piece + 3], r15b
-
-        movzx edi, byte [active_piece + 4]  ; Piece's char
-        call _modify_piece_on_board
-
-    mov rax, r13
-    pop r13
     pop r14
     pop r15
-    ret
+
+    .return:
+        ret
+
+; Draws a piece at its (X, Y) coordinates in the board.
+; Arguments:
+;   None
+; Return:
+;    None
+_draw_piece:
+    ; Update coordinates
+    ; sx needed, coordinates might be negative!!!
+    movsx r8, byte [active_piece + 2]   
+    add r14, r8                         ; X
+    movsx r8, byte [active_piece + 3]
+    add r15, r8                         ; Y
+    mov [active_piece + 2], r14b
+    mov [active_piece + 3], r15b
+
+    movzx edi, byte [active_piece + 4]  ; Piece's char
+    call _modify_piece_on_board
 
 ; Erases a piece from its current position. Allows us to verify if the piece
 ; can be moved to a (possible new) location without colliding with itself.
@@ -114,34 +207,6 @@ _modify_piece_on_board:
         dec r9
         jnz .outer_loop_start
     
-    .return:
-        ret
-
-; Check if the active piece can be moved by one position (right, left, or
-; down). (0, 0) is not a valid move.
-; This assumes the active piece have been erased from the board BEFORE it
-; was called.
-; Arguments:
-;   rdi - Vertical displacement (dy): 1 for Down, 0 for horizontal moves
-;   rsi - Horizontal displacement (dx): -1 for Left, 1 for Right, 0 for Down
-; Return:
-;   rax - Whether the piece can be moved (1) or not (0)   
-_can_move_piece:
-    mov rax, 0
-    cmp rdi, rsi                        ; Invalid move
-    je .return
-    cmp rdi, 0
-    jl .return
-
-    movsx r8, byte [active_piece + 2]
-    add r8, rsi                         ; target_x = x + dx
-    movsx r9, byte [active_piece + 3]
-    add r9, rdi                         ; target_y = y + dy
-
-    mov rdi, r8
-    mov rsi, r9
-    call _can_place_piece
-
     .return:
         ret
 

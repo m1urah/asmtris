@@ -1,8 +1,5 @@
 global _start
-extern init_board, process_input, update_screen, process_board, spawn_piece
-extern choose_next_piece
-extern game_board, frames_until_drop
-extern GAME_BOARD_WIDTH
+extern init_board, init_screen, process_input, update_screen, gravity_tick
 default rel
 
 section .rodata
@@ -42,16 +39,12 @@ section .bss
 section .text
 _start:
     call init_env
+    call init_screen
     call init_board
-
-    call choose_next_piece
-    call spawn_piece
 
     sub rsp, 3                      ; User input buffer
     .infinity:
         call sleep
-
-        dec byte [frames_until_drop]
 
         .read_user_input:
             mov rax, 0
@@ -66,13 +59,13 @@ _start:
 
             cmp byte [rsp], "q"
             je exit_handler
-            
+
             mov rdi, rsp
             mov rsi, r13
             call process_input
 
         .continue_loop:
-            call process_board
+            call gravity_tick
             call update_screen
             jmp .infinity
 
