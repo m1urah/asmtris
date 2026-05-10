@@ -1,8 +1,7 @@
-global init_board, process_input, gravity_tick
+global init_board, process_input, gravity_tick, verify_game_over
 global game_board, active_piece, score, level, lines
 global next_piece, needs_next_piece_redraw, is_paused
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
-global MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
 extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets
 extern calculate_hard_drop, do_hard_drop
 extern LOCK_DELAY_VALUE
@@ -11,18 +10,11 @@ default rel
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
 GAME_BOARD_HEIGHT       equ 25      ; 4 first lines = hidden (spawn) zone
+GAME_BOARD_SIZE         equ GAME_BOARD_WIDTH * GAME_BOARD_HEIGHT
 
-MAX_SCORE               equ 999999
-MAX_SCORE_DIG_LEN       equ 6       ; digits
-MAX_LEVEL_DIG_LEN       equ 3       ; 255
-MAX_LINES               equ 7777
-MAX_LINES_DIG_LEN       equ 4
-
-MOVE_PIECE_FREQ         equ 30      ; 1 every 30 FPS
 PIECE_STRUCT_MAX_SIZE   equ 23      ; piece_i is current max
 
 section .rodata
-    ; === TETROMINOES ===
     ; To have adequate rotation, the I piece uses a 4x4 bounding box, J, L, S,
     ; T, Z pieces 3x3, and the O piece 2x2 (so that it can't be rotated).
 
@@ -82,26 +74,26 @@ section .rodata
         dq piece_t
         dq piece_o
 
+    level_speeds:   ; Lvl 0, 1, 2 ... 29+
+        db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
+        db 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2
+        db 2, 2, 2, 2, 2, 2, 2, 1
+
 section .data
     ; Logical game board. Possible values:
     ;   - 0x20: empty cell (space)
     ;   - o, i, s, z, l, j, t: identifies part of a piece. Represented as:
     ;       oo  iiii   ss  zz     l  j      t 
     ;       oo        ss    zz  lll  jjj  ttt
-    game_board              times 325 db 0x20       ; 13 cols x 25 lines
+    game_board              times GAME_BOARD_SIZE db 0x20
 
     score                   dd 0
     lines                   dd 0
     level                   db 0
     
-    frames_until_drop       db MOVE_PIECE_FREQ
-    needs_next_piece_redraw db 1
+    frames_until_drop       db 0
+    needs_next_piece_redraw db 0
     is_paused               db 0
-
-    level_speeds:   ; Lvl 0, 1, 2 ... 29+
-        db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
-        db 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2
-        db 2, 2, 2, 2, 2, 2, 2, 1
 
 section .bss
     ; Tracks the active piece:
@@ -120,7 +112,43 @@ section .text
 
 ; =======  Entrypoint  ====================================================== ;
 
+; Sets the initial state of the board.
+; Arguments:
+;   None
+; Return:
+;   None
 init_board:
+    ; Set initial state
+    mov rax, 0x20
+
+    lea rdi, [game_board]
+    mov rcx, GAME_BOARD_SIZE
+    rep stosb
+    
+    lea rdi, [active_piece]
+    mov rcx, PIECE_STRUCT_MAX_SIZE
+    rep stosb
+
+    lea rdi, [next_piece]
+    mov rcx, PIECE_STRUCT_MAX_SIZE
+    rep stosb
+
+    mov dword [score], 0
+    mov dword [lines], 0
+    mov byte [level], 0
+
+    movzx eax, byte [level]
+    mov r8b, [level_speeds + rax]       ; Current level speed
+    mov byte [frames_until_drop], r8b   ; Reset timer
+
+    mov byte [needs_next_piece_redraw], 1
+    mov byte [is_paused], 0
+
+    ; From transforms.s
+    mov byte [lock_delay], 0
+    mov byte [lock_delay_active], 0
+    mov byte [lock_resets], 0
+
     call choose_next_piece
     call spawn_piece
 
@@ -135,11 +163,6 @@ init_board:
 process_input:
     test rsi, rsi
     jz .return
-
-    ; (X, Y) are set on the top-left corner. Allow movement when piece is partially
-    ; visible
-    cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS -1    ; Math done by NASM
-    jl .return
 
     push r15
     xor r15, r15        ; Down move?
@@ -165,6 +188,10 @@ process_input:
         cmp byte [is_paused], 1
         je .done
 
+        ; Allow movement when piece is partially visible (math done by NASM)
+        cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS - 1
+        jl .done
+
         cmp al, 'a'
         je .do_left
         cmp al, 'd'
@@ -185,6 +212,10 @@ process_input:
         cmp byte [is_paused], 1
         je .done
 
+        ; Allow movement when piece is partially visible (math done by NASM)
+        cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS - 1
+        jl .done
+
         cmp eax, `\e[D`
         je .do_left
         cmp eax, `\e[C`
@@ -198,6 +229,7 @@ process_input:
 
     .do_pause:
         xor byte [is_paused], 1
+        mov byte [needs_next_piece_redraw], 1
         jmp .done
 
     .do_up:     ; rotate
@@ -287,7 +319,9 @@ gravity_tick:
         dec byte [frames_until_drop]
         jnz .return
 
-        mov byte [frames_until_drop], MOVE_PIECE_FREQ   ; Reset timer
+        movzx eax, byte [level]
+        mov r8b, [level_speeds + rax]       ; Current level speed
+        mov byte [frames_until_drop], r8b   ; Reset timer
 
         xor rdi, rdi
         mov rsi, 1
@@ -314,7 +348,11 @@ spawn_piece:
 
     call choose_next_piece
     call calculate_hard_drop
-    ret
+    
+    mov rax, 0
+
+    .return:
+        ret
 
 ; Randomly selects the next piece using the getrandom syscall. The piece is
 ; displayed on the screen and staged for used by spawn_piece.
@@ -541,6 +579,45 @@ update_score:
     jz .return
 
     add dword [score], edi
+
+    .return:
+        ret
+
+
+; =======  Other  =========================================================== ;
+
+; Checks if any part of a piece is located within the hidden zone. Must be
+; called BEFORE a spawning a new piece.
+; Arguments:
+;   None
+; Return:
+;   rax - 1 if Game Over, 0 if games continue
+verify_game_over:
+    mov rax, 0
+
+    cmp byte [lock_delay_active], 1
+    jne .return
+    cmp byte [lock_delay], 1
+    ja .return
+
+    mov rdi, NUMBER_OF_HIDDEN_ROWS - 1
+
+    ; r8 points to the first byte of the LAST hidden row
+    imul rdx, rdi, GAME_BOARD_WIDTH
+    lea r8, [game_board]
+    add r8, rdx
+
+    mov rax, 1
+    mov rcx, GAME_BOARD_WIDTH
+
+    .check_row_loop:
+        cmp byte [r8], 0x20
+        jne .return
+        inc r8
+        dec rcx
+        jnz .check_row_loop
+
+    mov rax, 0
 
     .return:
         ret

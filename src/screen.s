@@ -1,6 +1,5 @@
-global init_screen, update_screen
+global init_screen, update_screen, render_game_over
 extern GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
-extern MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
 extern game_board, score, level, lines, next_piece, needs_next_piece_redraw, is_paused
 default rel
 
@@ -9,42 +8,42 @@ TERMINAL_BOARD_HEIGHT   equ 21
 TERMINAL_BOARD_INIT_X   equ 26
 TERMINAL_BOARD_INIT_Y   equ 2
 
-STATS_STAT_START_X      equ 14  ; Max 6 chars per stat
-STATS_STAT_START_Y      equ 2
+STATS_STAT_OFFSET_X     equ 13  ; Max 6 chars per stat
+STATS_STAT_OFFSET_Y     equ 10
 STATS_VALUE_LEN         equ 6
 
-NEXT_PIECE_START_Y      equ 3
-NEXT_PIECE_START_Y_I    equ 2   ; I is 4 rows long, would overflow
-NEXT_PIECE_START_X      equ 63
-NEXT_PIECE_START_X_I    equ 62
-NEXT_PIECE_START_X_O    equ 64
+NEXT_PIECE_OFFSET_Y     equ 3
+NEXT_PIECE_OFFSET_Y_I   equ 2   ; I is 4 rows long, would overflow
+NEXT_PIECE_OFFSET_X     equ 8
+NEXT_PIECE_OFFSET_X_I   equ 7
+NEXT_PIECE_OFFSET_X_O   equ 9
+
+GAME_OVER_OFFSET_X      equ 43
+GAME_OVER_OFFSET_Y      equ 10
+GAME_OVER_VALUE_LEN     equ 6
 
 section .rodata
     ;# Enter alternate buffer -> clear screen -> hide cursor
     clear_seq           db `\x1b[?1049h\x1b[2J\x1b[3J\x1b[H\x1b[?25l`
     clear_len           equ $-clear_seq
 
-    hello_world         db "Hello, World 1!"
-    hello_world_len     equ $-hello_world
-    hello_world_2       db "Hello, World 2!"
-    hello_world_3       db "Hello, World 3!"
-
     ;# === PANELS ===
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_stats:
-        db 21   ; width
-        db 5    ; height
+        db 20   ; width
+        db 6    ; height
         db 1    ; col (X)
-        db 1    ; line (Y)
+        db 8    ; line (Y)
         ; utf-8 chars are multi-byte, null terminator marks end of row
-        db "┏━━━━━━━Stats━━━━━━━┓", 0
-        db "┃ Score           X ┃", 0
-        db "┃ Level           X ┃", 0
-        db "┃ Lines           X ┃", 0
-        db "┗━━━━━━━━━━━━━━━━━━━┛", 0
+        db "┏━━━━━━━Stats━━━━━━┓", 0
+        db "┃ Top            X ┃", 0
+        db "┃ Score          X ┃", 0
+        db "┃ Lines          X ┃", 0
+        db "┃ Level          X ┃", 0
+        db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_next:
-        db 20, 6, 56, 1
+        db 20, 6, 1, 1
         db "┏━━━━━━━Next━━━━━━━┓", 0
         db "┃                  ┃", 0
         db "┃       ????       ┃", 0
@@ -53,7 +52,7 @@ section .rodata
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_help:
-        db 21, 9, 56, 8
+        db 20, 9, 1, 15
         db "┏━━━━━━━Help━━━━━━━┓", 0
         db "┃ Left      h, ←   ┃", 0
         db "┃ Right     l, →   ┃", 0
@@ -90,9 +89,18 @@ section .rodata
         db "┃                            ┃", 0  ;# Row 1 (Bottom)
         db "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", 0
 
-section .data
-    redraw_next_after_pause     db 0            ; Needed by call in line 127
-
+    panel_game_over:
+        db 30, 10, 24, 7
+        db "┃     G A M E    O V E R     ┃", 0
+        db "┃    ════════════════════    ┃", 0
+        db "┃                            ┃", 0
+        db "┃    Final Score:       X    ┃", 0
+        db "┃    Lines Cleared:     X    ┃", 0
+        db "┃    Level Reached:     X    ┃", 0
+        db "┃                            ┃", 0
+        db "┃                            ┃", 0
+        db "┃       Press [Space]        ┃", 0
+        db "┃       to play again.       ┃", 0
 
 section .text
 
@@ -125,8 +133,6 @@ init_screen:
     call _draw_panel
 
     call update_screen      ; Wipes pause panel immediately to prevent visual "flash"
-    mov byte [redraw_next_after_pause], 1
-
     ret
 
 ; Draws a given panel (multi-line elem) on the screen at (X,Y), where (1,1) is
@@ -239,14 +245,12 @@ update_screen:
     call _set_level
     call _set_lines
 
-    movzx r8d, byte [redraw_next_after_pause]
-    or r8b, byte [needs_next_piece_redraw]
-    jz .return
+    cmp byte [needs_next_piece_redraw], 1
+    jnz .return
 
     ; If dirty, redraw and clean the flag
     call _set_next_piece
     mov byte [needs_next_piece_redraw], 0
-    mov byte [redraw_next_after_pause], 0
 
     jmp .return
 
@@ -366,24 +370,11 @@ _print_board_line:
 ;   None
 _set_score:
     mov edi, dword [score]
+    mov rsi, STATS_VALUE_LEN
+    mov rdx, STATS_STAT_OFFSET_X
+    mov r10, STATS_STAT_OFFSET_Y
+    call _write_int_left_aligned
 
-    mov rsi, MAX_SCORE_DIG_LEN
-    mov rdx, STATS_STAT_START_Y
-    call _set_stat
-    ret
-
-; Renders the current level to its designated place on the screen.
-; Arguments:
-;   None
-; Return:
-;   None
-_set_level:
-    movzx edi, byte [level]
-
-    mov rsi, MAX_LEVEL_DIG_LEN
-    mov rdx, STATS_STAT_START_Y
-    add rdx, 1
-    call _set_stat
     ret
 
 ; Renders the number of cleared lines to its designated place on the screen.
@@ -393,69 +384,27 @@ _set_level:
 ;   None
 _set_lines:
     mov edi, dword [lines]
+    mov rsi, STATS_VALUE_LEN
+    mov rdx, STATS_STAT_OFFSET_X
+    mov r10, STATS_STAT_OFFSET_Y
+    add r10, 1
+    call _write_int_left_aligned
 
-    mov rsi, MAX_LINES_DIG_LEN
-    mov rdx, STATS_STAT_START_Y
-    add rdx, 2
-    call _set_stat
     ret
 
-; Renders the given stat value to the screen.
+; Renders the current level to its designated place on the screen.
 ; Arguments:
-;   rdi - Stat value (score, level, or lines)
-;   rsi - Max digit count (see board.s MAX_*_DIG_LEN)
-;   rdx - Start row
+;   None
 ; Return:
 ;   None
-_set_stat:
-    push r15
-    push r14
-    push r13
-    push r12
+_set_level:
+    movzx edi, byte [level]
+    mov rsi, STATS_VALUE_LEN
+    mov rdx, STATS_STAT_OFFSET_X
+    mov r10, STATS_STAT_OFFSET_Y
+    add r10, 2
+    call _write_int_left_aligned
 
-    mov r15, rsi
-    mov r14, rdx
-
-    sub rsp, r15
-
-    ; rdi already set
-    mov rsi, rsp
-    call _itoa              ; Convert score to str
-
-    mov r13, rax            ; str len
-    mov r12, STATS_VALUE_LEN
-    sub r12, r13            ; alignment
-    jz .print_score
-
-    sub rsp, r12
-
-    ; Align score right by adding spaces
-    mov rax, 0x20
-    mov rdi, rsp
-    mov rcx, r12
-    rep stosb
-    
-    mov rdi, rsp
-    mov rsi, r12
-    mov rdx, STATS_STAT_START_X
-    mov r10, r14
-    call write_to_screen
-
-    add rsp, r12
-
-    .print_score:
-        mov rdi, rsp
-        mov rsi, r13
-        mov rdx, STATS_STAT_START_X
-        add rdx, r12
-        mov r10, r14
-        call write_to_screen
-    
-    add rsp, r15
-    pop r12
-    pop r13
-    pop r14
-    pop r15
     ret
 
 ; Renders the next piece to the screen.
@@ -488,17 +437,17 @@ _set_next_piece:
     sub rsp, rbx
 
     cmp rbx, 4
-    mov r15, NEXT_PIECE_START_X_I
-    mov r14, NEXT_PIECE_START_Y_I
+    mov r15, NEXT_PIECE_OFFSET_X_I
+    mov r14, NEXT_PIECE_OFFSET_Y_I
     je .outer_loop_start
 
-    mov r14, NEXT_PIECE_START_Y
+    mov r14, NEXT_PIECE_OFFSET_Y
 
     cmp rbx, 2
-    mov r15, NEXT_PIECE_START_X_O
+    mov r15, NEXT_PIECE_OFFSET_X_O
     je .outer_loop_start
 
-    mov r15, NEXT_PIECE_START_X
+    mov r15, NEXT_PIECE_OFFSET_X
 
     .outer_loop_start:
         mov rcx, rbx
@@ -595,6 +544,45 @@ _clear_next_piece_panel:
     pop r14
     pop r15
     ret
+
+
+; =======  Game Over Rendering  ============================================= ;
+
+; Renders the Game Over screen with the final game statistics.
+; Arguments:
+;   None
+; Return:
+;   None
+render_game_over:
+    ; Clean the main panel
+    mov rdi, panel_main
+    call _draw_panel
+
+    mov rdi, panel_game_over
+    call _draw_panel
+
+    mov edi, [score]
+    mov rsi, GAME_OVER_VALUE_LEN
+    mov rdx, GAME_OVER_OFFSET_X
+    mov r10, GAME_OVER_OFFSET_Y
+    call _write_int_left_aligned
+
+    mov edi, [lines]
+    mov rsi, GAME_OVER_VALUE_LEN
+    mov rdx, GAME_OVER_OFFSET_X
+    mov r10, GAME_OVER_OFFSET_Y
+    add r10, 1
+    call _write_int_left_aligned
+
+    movzx edi, byte [level]
+    mov rsi, GAME_OVER_VALUE_LEN
+    mov rdx, GAME_OVER_OFFSET_X
+    mov r10, GAME_OVER_OFFSET_Y
+    add r10, 2
+    call _write_int_left_aligned
+
+    ret
+
 
 ; =======  Utils  =========================================================== ;
 
@@ -723,4 +711,75 @@ _itoa:
         jnz .digit_to_ascii
 
     mov byte [rsi + r10], 0x0
+    ret
+
+; Renders an integer value to the screen with right alignment. If the rendered
+; digit count is smaller than the specified maximum digit count, left padding
+; is added so the value remains visually aligned.
+; Arguments:
+;   rdi - Integer value to render
+;   rsi - Length of destination field. Must be greater or equal than the maximum
+;         digit count for the rendered value (e.g. 3 for rdi = 120)
+;   rdx - X coordinate
+;   r10 - Y coordinate
+;   r8 - Length 
+; Return:
+;   None
+_write_int_left_aligned:
+    push r15
+    push r14
+    push r13
+    push r12
+
+    mov r15, rsi
+    mov r14, rdx
+    mov r13, r10
+    
+    sub rsp, r15
+
+    ; rdi already set
+    mov rsi, rsp
+    call _itoa
+
+    mov r12, rax        ; Size of str
+
+    mov r8, r15
+    sub r8, r12         ; Alignment
+    jz .print_value
+
+    ; --- Alignment required ---
+    sub rsp, r8         ; Reserve space BEFORE the str to place alignment
+    mov r9, rsp
+
+    mov rax, 0x20
+    mov rdi, rsp
+    mov rcx, r8
+    cld                 ; Makes sure stosb runs forward
+    rep stosb
+
+    push r8
+
+    mov rdi, r9         ; push advances rsp
+    mov rsi, r8
+    mov rdx, r14
+    mov r10, r13
+    call write_to_screen
+
+    pop r8
+    add rsp, r8
+
+    .print_value:
+        mov rdi, rsp
+        mov rsi, r12
+        mov rdx, r14
+        add rdx, r8
+        mov r10, r13
+        call write_to_screen
+
+    add rsp, r15
+
+    pop r12
+    pop r13
+    pop r14
+    pop r15
     ret

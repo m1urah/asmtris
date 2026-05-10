@@ -2,7 +2,7 @@ global move_piece, rotate_figure, calculate_hard_drop, do_hard_drop
 global lock_delay_active, lock_delay, lock_resets
 global LOCK_DELAY_VALUE
 extern game_board, active_piece
-extern GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT
+extern GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 default rel
 
 LOCK_DELAY_VALUE        equ 30  ; 0.5 sec at 60fps

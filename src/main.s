@@ -1,5 +1,6 @@
 global _start
 extern init_board, init_screen, process_input, update_screen, gravity_tick
+extern verify_game_over, render_game_over
 default rel
 
 section .rodata
@@ -39,10 +40,19 @@ section .bss
 section .text
 _start:
     call init_env
+    sub rsp, 4                      ; User input buffer
+
+; Starts a new game by resetting game state, initializing the board and screen,
+; and entering the main game loop, where input, physics are processed until end
+; of game.
+; Arguments:
+;   None
+; Return:
+;   Does not return
+start_game:
     call init_board
     call init_screen
 
-    sub rsp, 4                      ; User input buffer
     .infinity:
         call sleep
 
@@ -65,13 +75,51 @@ _start:
             call process_input
 
         .continue_loop:
+            call verify_game_over
+            test rax, rax
+            jnz game_over
+
             call gravity_tick
             call update_screen
             jmp .infinity
 
-; Initializes the terminal environment:
-;   - Signal handling (CTRL+C, CTRL+Z)
-;   - Disable terminal buffering and echoing
+; Displays the final game screen and waits for user input to either restart the
+; game or exit the program.
+; Arguments:
+;   None
+; Return:
+;   Does not return (either restarts game or exits process)
+game_over:
+    call render_game_over
+
+    .get_user_decision:
+        call sleep
+
+        ; Read user input
+        mov rax, 0
+        mov rdi, 0
+        mov rsi, rsp
+        mov rdx, 3
+        syscall
+
+        mov r13, rax    
+        test r13, r13
+        jz .get_user_decision   ; No input?
+
+        cmp byte [rsp], "q"
+        je exit_handler
+
+        cmp byte [rsp], 0x20
+        je start_game
+
+        jmp .get_user_decision
+
+
+; =======  Environment  ===================================================== ;
+
+; Initializes the terminal environment by setting up signal handlers for CTRL+C
+; and CTRL+Z, and disabling terminal buffering and echoing for real-time input
+; processing.
 ; Arguments:
 ;   None
 ; Return:
@@ -108,6 +156,12 @@ sleep:
 
     ret
 
+; Restores the terminal state and terminates the process.
+; Intended to be used both as a signal handler and normal exit routine.
+; Arguments:
+;   None
+; Return:
+;   Does not return
 exit_handler:
     call restore_screen
 
@@ -115,12 +169,24 @@ exit_handler:
     mov rax, 60
     syscall
 
+; Signal restorer used by rt_sigaction with SA_RESTORER. Returns execution flow
+; back to the kernel after signal handling.
+; Arguments:
+;   None
+; Return:
+;   None
 exit_restorer:
     ; rt_sigreturn
     mov rax, 15
     syscall
     ret
 
+; Restores the original terminal configuration and returns the terminal to the
+; normal screen buffer with the cursor visible.
+; Arguments:
+;   None
+; Return:
+;   None
 restore_screen:
     %define TCSETS          0x5402
 
@@ -139,9 +205,9 @@ restore_screen:
 
     ret
 
-; Modify the terminal behavior using the termios struct. Disables two flags:
-;   - ICANON: read keypresses immediately 
-;   - ECHO: do not echo received characters
+; Modify the terminal behavior using the termios struct for real-time keyboard
+; input. Disables canonical mode (no need for newline) and input echoing, and
+; configures stdin polling to work in non-blocking mode.
 ; Arguments:
 ;   None
 ; Return:
