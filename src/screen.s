@@ -1,11 +1,11 @@
 global init_screen, update_screen
 extern GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
 extern MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
-extern game_board, score, level, lines, next_piece, needs_next_piece_redraw
+extern game_board, score, level, lines, next_piece, needs_next_piece_redraw, is_paused
 default rel
 
 TERMINAL_BOARD_WIDTH    equ 26
-TERMINAL_BOARD_HEIGHT   equ 20
+TERMINAL_BOARD_HEIGHT   equ 21
 TERMINAL_BOARD_INIT_X   equ 26
 TERMINAL_BOARD_INIT_Y   equ 2
 
@@ -47,13 +47,13 @@ section .rodata
         db 20, 6, 56, 1
         db "┏━━━━━━━Next━━━━━━━┓", 0
         db "┃                  ┃", 0
-        db "┃                  ┃", 0
-        db "┃                  ┃", 0
+        db "┃       ????       ┃", 0
+        db "┃       ????       ┃", 0
         db "┃                  ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_help:
-        db 21, 8, 56, 9
+        db 21, 9, 56, 8
         db "┏━━━━━━━Help━━━━━━━┓", 0
         db "┃ Left      h, ←   ┃", 0
         db "┃ Right     l, →   ┃", 0
@@ -61,21 +61,23 @@ section .rodata
         db "┃ Rotate    k, ↑   ┃", 0
         db "┃ Drop      space  ┃", 0
         db "┃ Quit      q      ┃", 0
+        db "┃ Pause     p, ESC ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_main:
-        db 30, 22, 24, 1
-        db "┏━━━━━━━━━━━Tetris━━━━━━━━━━━┓", 0
-        db "┃                            ┃", 0  ;# Row 20 (Top)
+        db 30, 23, 24, 1
+        db "┏━━━━allthingsmalware.com━━━━┓", 0
+        db "┃                            ┃", 0  ;# Row 21 (Top)
         db "┃                            ┃", 0
         db "┃                            ┃", 0
         db "┃                            ┃", 0
         db "┃                            ┃", 0
         db "┃                            ┃", 0
         db "┃                            ┃", 0
+        db "┃                            ┃", 0 
         db "┃                            ┃", 0
-        db "┃                            ┃", 0
-        db "┃                            ┃", 0
+        db "┃         [ PAUSED ]         ┃", 0
+        db "┃      press p to resume     ┃", 0
         db "┃                            ┃", 0
         db "┃                            ┃", 0 
         db "┃                            ┃", 0 
@@ -88,9 +90,11 @@ section .rodata
         db "┃                            ┃", 0  ;# Row 1 (Bottom)
         db "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛", 0
 
+section .data
+    redraw_next_after_pause     db 0            ; Needed by call in line 127
+
 
 section .text
-
 
 ; =======  Board Initialization  ============================================ ;
 
@@ -119,6 +123,9 @@ init_screen:
 
     mov rdi, panel_main
     call _draw_panel
+
+    call update_screen      ; Wipes pause panel immediately to prevent visual "flash"
+    mov byte [redraw_next_after_pause], 1
 
     ret
 
@@ -224,17 +231,34 @@ _strlen:
 ; Return:
 ;   None
 update_screen:
+    cmp byte [is_paused], 1
+    je .display_paused_graphics
+
     call _print_board
     call _set_score
     call _set_level
     call _set_lines
 
-    cmp byte [needs_next_piece_redraw], 1
-    jne .return
+    movzx r8d, byte [redraw_next_after_pause]
+    or r8b, byte [needs_next_piece_redraw]
+    jz .return
 
     ; If dirty, redraw and clean the flag
     call _set_next_piece
     mov byte [needs_next_piece_redraw], 0
+    mov byte [redraw_next_after_pause], 0
+
+    jmp .return
+
+    .display_paused_graphics:
+        mov rdi, panel_next
+        call _draw_panel
+
+        mov rdi, panel_help
+        call _draw_panel
+
+        mov rdi, panel_main
+        call _draw_panel
 
     .return:
         ret
@@ -316,7 +340,6 @@ _print_board_line:
         add r10, 2
         dec rcx
         jnz .dup_byte
-
 
     mov rbx, r11
     sub rbx, rdi                ; We return this (bytes read: src_end - src_start)
@@ -459,7 +482,7 @@ _set_next_piece:
     push rbp
 
     mov r12, rbx                        ; Height counter
-    lea r13, [next_piece + 6]           ; Array pointer
+    lea r13, [next_piece + 7]           ; Array pointer
 
     sub rsp, rbx
     sub rsp, rbx
@@ -482,8 +505,7 @@ _set_next_piece:
         mov rbp, rsp
 
         .inner_loop_start:
-            ; mov rdx, r12
-            movzx rdx, byte [next_piece + 4]
+            movzx rdx, byte [next_piece + 5]
             cmp byte [r13], 1
 
             mov rsi, 0x20

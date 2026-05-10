@@ -1,4 +1,4 @@
-global move_piece, rotate_figure
+global move_piece, rotate_figure, calculate_hard_drop, do_hard_drop
 global lock_delay_active, lock_delay, lock_resets
 global LOCK_DELAY_VALUE
 extern game_board, active_piece
@@ -39,7 +39,11 @@ move_piece:
     mov r14, rsi
     mov r13, 1              ; Assume piece will move
 
-    call can_move_piece
+    call _erase_piece_from_board
+
+    mov rdi, r15
+    mov rsi, r14
+    call _can_move_piece
     mov r13, rax            ; Save success (1) or failure (0)
 
     test r13, r13
@@ -50,7 +54,7 @@ move_piece:
     add byte [active_piece + 3], r14b   ; Y
 
     .draw_piece:
-        movzx edi, byte [active_piece + 4]
+        movzx edi, byte [active_piece + 5]
         call _modify_piece_on_board
 
     test r13, r13
@@ -96,14 +100,14 @@ move_piece:
         ret
 
 ; Check if the active piece can be moved by one position (right, left, or
-; down), (0, 0) is not valid. The active piece is erased from the board before
-; checking for possible movement.
+; down), (0, 0) is not valid. This function assumes the active piece has
+; been erased from the board.
 ; Arguments:
 ;   rdi - Horizontal displacement (dx): -1 for Left, 1 for Right, 0 for Down
 ;   rsi - Vertical displacement (dy):    1 for Down, 0 for horizontal moves
 ; Return:
 ;   rax - Whether the piece can be moved (1) or not (0)   
-can_move_piece:
+_can_move_piece:
     mov rax, 0                          ; NOT moved
 
     cmp rdi, rsi                        ; Invalid move
@@ -115,8 +119,6 @@ can_move_piece:
     push r14
     mov r15, rdi
     mov r14, rsi
-
-    call _erase_piece_from_board
 
     movsx r8, byte [active_piece + 2]
     add r15, r8                         ; target_x = dx + x
@@ -132,24 +134,6 @@ can_move_piece:
 
     .return:
         ret
-
-; Draws a piece at its (X, Y) coordinates in the board.
-; Arguments:
-;   None
-; Return:
-;    None
-_draw_piece:
-    ; Update coordinates
-    ; sx needed, coordinates might be negative!!!
-    movsx r8, byte [active_piece + 2]   
-    add r14, r8                         ; X
-    movsx r8, byte [active_piece + 3]
-    add r15, r8                         ; Y
-    mov [active_piece + 2], r14b
-    mov [active_piece + 3], r15b
-
-    movzx edi, byte [active_piece + 4]  ; Piece's char
-    call _modify_piece_on_board
 
 ; Erases a piece from its current position. Allows us to verify if the piece
 ; can be moved to a (possible new) location without colliding with itself.
@@ -177,7 +161,7 @@ _modify_piece_on_board:
 
     ; Just a label plus a constant displacement, with no base/index registers,
     ; NASM will automatically compile this as a RIP-relative load.
-    lea r11, [active_piece + 6]         ; src pointer
+    lea r11, [active_piece + 7]         ; src pointer
 
     movsx rcx, byte [active_piece + 3]
     imul rax, rcx, GAME_BOARD_WIDTH
@@ -211,6 +195,78 @@ _modify_piece_on_board:
         ret
 
 
+; =======  Hard Drop  ======================================================= #
+
+; Calculates the lowest possible valid Y position for the active piece.
+; Arguments:
+;   None
+; Return:
+;   None
+calculate_hard_drop:
+    push r15
+    push r14
+
+    movzx r15d, byte [active_piece + 3] ; Y
+    mov r14, r15                        ; Save original
+
+    call _erase_piece_from_board
+
+    .calculate_final_y:
+        mov byte [active_piece + 3], r15b
+        inc r15
+
+        mov rdi, 0
+        mov rsi, 1
+        call _can_move_piece
+
+        test rax, rax
+        jnz .calculate_final_y
+
+    dec r15
+    mov byte [active_piece + 4], r15b
+    mov byte [active_piece + 3], r14b   ; Restore original
+    
+    ; Draw piece back to its original pos
+    movzx edi, byte [active_piece + 5]
+    call _modify_piece_on_board
+
+    pop r14
+    pop r15
+    ret
+
+; The active piece teleports to the lowest possible valid Y position, stored at
+; its 4 offset.
+; Arguments:
+;   None
+; Return:
+;   rax - Number of skipped cells
+do_hard_drop:
+    movzx eax, byte [active_piece + 4]
+    sub al, [active_piece + 3]  ; Skipped cells
+
+    test rax, rax
+    jz .return
+
+    push r15
+    mov r15, rax
+    
+    ; --- Cells skipped ---
+
+    call _erase_piece_from_board
+
+    ; Move from calculated hard-drop Y to current Y
+    mov cl, byte [active_piece + 4]
+    mov byte [active_piece + 3], cl
+
+    movzx edi, byte [active_piece + 5]
+    call _modify_piece_on_board
+
+    mov rax, r15
+    pop r15
+
+    .return:
+        ret
+
 ; =======  Piece Rotation  ================================================== #
 
 ; Rotates the current active figure 90 degrees clockwise. To verify this:
@@ -229,12 +285,12 @@ rotate_figure:
     call _erase_piece_from_board
 
     ; Backup the original figure array
-    mov rax, qword [active_piece+6]
-    mov rcx, qword [active_piece+14]
+    mov rax, qword [active_piece+7]
+    mov rcx, qword [active_piece+15]
     push rcx
     push rax
 
-    lea rdi, [active_piece+6]
+    lea rdi, [active_piece+7]
     movzx esi, byte [active_piece]
     call _rotate_array
 
@@ -250,11 +306,11 @@ rotate_figure:
     jnz .draw_piece
 
     ; Restore original figure array
-    mov qword [active_piece+6], rax
-    mov qword [active_piece+14], rcx
+    mov qword [active_piece+7], rax
+    mov qword [active_piece+15], rcx
 
     .draw_piece:
-        movzx edi, byte [active_piece + 4]  ; Piece's char
+        movzx edi, byte [active_piece + 5]  ; Piece's char
         call _modify_piece_on_board
 
     mov rax, r15
@@ -346,7 +402,7 @@ _can_place_piece:
     movzx ecx, byte [active_piece]      ; Piece width
     movzx edx, byte [active_piece + 1]  ; Piece height
 
-    lea r8, [active_piece + 6]          ; src pointer
+    lea r8, [active_piece + 7]          ; src pointer
 
     imul r9d, esi, GAME_BOARD_WIDTH
     add r9, rdi                         ; (target_y * board_width) + target_x

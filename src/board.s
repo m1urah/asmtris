@@ -1,15 +1,16 @@
 global init_board, process_input, gravity_tick
 global game_board, active_piece, score, level, lines
-global next_piece, needs_next_piece_redraw
+global next_piece, needs_next_piece_redraw, is_paused
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 global MAX_SCORE_DIG_LEN, MAX_LEVEL_DIG_LEN, MAX_LINES_DIG_LEN
 extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets
+extern calculate_hard_drop, do_hard_drop
 extern LOCK_DELAY_VALUE
 default rel
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
-GAME_BOARD_HEIGHT       equ 24      ; 4 first lines = hidden (spawn) zone
+GAME_BOARD_HEIGHT       equ 25      ; 4 first lines = hidden (spawn) zone
 
 MAX_SCORE               equ 999999
 MAX_SCORE_DIG_LEN       equ 6       ; digits
@@ -18,12 +19,12 @@ MAX_LINES               equ 7777
 MAX_LINES_DIG_LEN       equ 4
 
 MOVE_PIECE_FREQ         equ 30      ; 1 every 30 FPS
-PIECE_STRUCT_MAX_SIZE   equ 22      ; piece_i is current max
+PIECE_STRUCT_MAX_SIZE   equ 23      ; piece_i is current max
 
 section .rodata
-    ; === TETROMINOS ===
-    ; Following the Super Rotation System (SRS), the I piece uses a 4x4
-    ; bouding box, J, L, S, T, Z pieces 3x3, and the O piece 2x2.
+    ; === TETROMINOES ===
+    ; To have adequate rotation, the I piece uses a 4x4 bounding box, J, L, S,
+    ; T, Z pieces 3x3, and the O piece 2x2 (so that it can't be rotated).
 
     piece_i:
         db 4            ; Bounding box width
@@ -87,8 +88,7 @@ section .data
     ;   - o, i, s, z, l, j, t: identifies part of a piece. Represented as:
     ;       oo  iiii   ss  zz     l  j      t 
     ;       oo        ss    zz  lll  jjj  ttt
-    game_board              times 312 db 0x20       ; 13 cols x 24 lines
-    game_board_len          equ $-game_board
+    game_board              times 325 db 0x20       ; 13 cols x 25 lines
 
     score                   dd 0
     lines                   dd 0
@@ -96,6 +96,7 @@ section .data
     
     frames_until_drop       db MOVE_PIECE_FREQ
     needs_next_piece_redraw db 1
+    is_paused               db 0
 
     level_speeds:   ; Lvl 0, 1, 2 ... 29+
         db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
@@ -108,21 +109,22 @@ section .bss
     ;   - Offset 1: Height (rows)
     ;   - Offset 2: X position (might be negative to account for empty cols)
     ;   - Offset 3: Y position
-    ;   - Offset 4: Piece character
-    ;   - Offset 5: Array length
-    ;   - Offset 6: Array data (1 for solid, 0 for empty). Size defined by Offset 4
+    ;   - Offset 4: Y position (hard drop)
+    ;   - Offset 5: Piece character
+    ;   - Offset 6: Array length
+    ;   - Offset 7: Array data (1 for solid, 0 for empty). Size defined by Offset 6
     active_piece            resb PIECE_STRUCT_MAX_SIZE
     next_piece              resb PIECE_STRUCT_MAX_SIZE
 
 section .text
+
+; =======  Entrypoint  ====================================================== ;
 
 init_board:
     call choose_next_piece
     call spawn_piece
 
     ret
-
-; =======  Entrypoint  ====================================================== ;
 
 ; Process all inputs from the user except for quit.
 ; Arguments:
@@ -142,35 +144,65 @@ process_input:
     push r15
     xor r15, r15        ; Down move?
 
-    mov eax, [rdi]      ; Load 4 bytes (even if buffer is smaller)
+    mov eax, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
 
-    ; --- 1-Byte Commands (WASD) ---
-    cmp al, 'a'
-    je .do_left
-    cmp al, 'd'
-    je .do_right
-    cmp al, 'w'
-    je .do_up
-    cmp al, 's'
-    je .do_down
+    ; Route based on exact bytes read
+    cmp rsi, 1
+    je .handle_1_byte   ; WASD / Space
+    
+    cmp rsi, 3
+    je .handle_3_byte   ; Arrows
+    
+    jmp .done           ; Ignore 2-byte or 4+-byte keystrokes
 
-    ; --- 3-Byte Commands (Arrows) ---
-    ; Mask EAX to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
-    and eax, 0x00FFFFFF
+    .handle_1_byte:
+        ; RSI = 1. We ONLY look at AL
+        cmp al, 'p'
+        je .do_pause
+        cmp al, `\e`
+        je .do_pause
 
-    cmp eax, `\e[D`
-    je .do_left
-    cmp eax, `\e[C`
-    je .do_right
-    cmp eax, `\e[A`
-    je .do_up
-    cmp eax, `\e[B`
-    je .do_down
+        cmp byte [is_paused], 1
+        je .done
 
-    jmp .done
+        cmp al, 'a'
+        je .do_left
+        cmp al, 'd'
+        je .do_right
+        cmp al, 'w'
+        je .do_up
+        cmp al, 's'
+        je .do_down
+        cmp al, 0x20
+        je .do_space
+
+        jmp .done
+
+    .handle_3_byte:
+        ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
+        and eax, 0x00FFFFFF
+
+        cmp byte [is_paused], 1
+        je .done
+
+        cmp eax, `\e[D`
+        je .do_left
+        cmp eax, `\e[C`
+        je .do_right
+        cmp eax, `\e[A`
+        je .do_up
+        cmp eax, `\e[B`
+        je .do_down
+
+        jmp .done
+
+    .do_pause:
+        xor byte [is_paused], 1
+        jmp .done
 
     .do_up:     ; rotate
         call rotate_figure
+        call calculate_hard_drop
         jmp .done
 
     .do_left:   ; (-1, 0)
@@ -192,13 +224,25 @@ process_input:
         call move_piece
 
         test rax, rax
-        jz .done            ; Move failed, skip score
+        jz .done        ; Move failed, skip score
 
         test r15, r15
-        jz .done            ; Not a down move, skip score
+        jz .update_hd   ; Not a down move, skip score
 
         ; --- Score Update ---
         mov rdi, 1
+        call update_score
+        jmp .done
+
+        ; --- Hard Drop Update ---
+        .update_hd:
+            call calculate_hard_drop
+            jmp .done
+
+    .do_space:
+        call do_hard_drop
+        
+        imul rdi, rax, 2    ; 2 points per skipped cell
         call update_score
 
     .done:
@@ -215,6 +259,9 @@ process_input:
 ; Return:
 ;   None
 gravity_tick:
+    cmp byte [is_paused], 1
+    je .return
+
     cmp byte [lock_delay_active], 1
     jne .continue
 
@@ -266,6 +313,7 @@ spawn_piece:
     rep movsb
 
     call choose_next_piece
+    call calculate_hard_drop
     ret
 
 ; Randomly selects the next piece using the getrandom syscall. The piece is
@@ -294,26 +342,23 @@ choose_next_piece:
     div r8
     mov rax, rdx
 
-    lea r8, [piece_selector]    ; We cannot combine both instructions because of
-    mov r9, [r8 + rax * 8]      ; RIP-relative addressing
-
     ; 3. Set new values in next_piece
-    %assign i 0
+    lea r8, [piece_selector]        ; RIP-relative addressing
+    mov rsi, [r8 + rax * 8]         ; src index
+    lea rdi, [next_piece]           ; dst index
 
-    %rep 6
-        movzx r8d, byte [r9 + i]
-        mov byte [next_piece + i], r8b
-        %assign i i + 1
-    %endrep
-    
-    ; r8 = array length (min = 4)
-    ; offset by 5 -> 5 + arr_length = final byte
-    .set_array_data:
-        movzx r10d, byte [r9 + 5 + r8]
-        mov byte [next_piece + 5 + r8], r10b
+    cld
 
-        dec r8
-        jnz .set_array_data
+    ; Copy first 4 bytes (pieces do not have same Offset 4)
+    mov rcx, 4
+    rep movsb
+
+    mov byte [rdi], 0
+    inc rdi
+
+    ; Copy remaining bytes
+    mov rcx, PIECE_STRUCT_MAX_SIZE - 4
+    rep movsb
 
     .return:
         add rsp, 8
@@ -347,7 +392,7 @@ clear_full_rows:
         mov rdi, r15
         call _shift_rows_down
         inc r14
-        
+
         inc r15                     ; Need to verify r15 again (content was shifted down)
 
         .next_row:

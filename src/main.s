@@ -39,10 +39,10 @@ section .bss
 section .text
 _start:
     call init_env
-    call init_screen
     call init_board
+    call init_screen
 
-    sub rsp, 3                      ; User input buffer
+    sub rsp, 4                      ; User input buffer
     .infinity:
         call sleep
 
