@@ -23,7 +23,7 @@ section .rodata
         db 4            ; Bounding box height
         db 4            ; Initial X
         db 0            ; Initial Y
-        db 'i'          ; Piece character
+        db 42           ; Xterm-256 color #00D787
         db 16           ; Size of array (array length)
         db 0, 0, 0, 0   ; Array data (1 for solid, 0 for empty)
         db 1, 1, 1, 1
@@ -31,37 +31,37 @@ section .rodata
         db 0, 0, 0, 0
         
     piece_s:
-        db 3, 3, 5, 0, 's', 9
+        db 3, 3, 5, 0, 203, 9           ; #FF5F5F
         db 0, 1, 1
         db 1, 1, 0
         db 0, 0, 0
         
     piece_z:
-        db 3, 3, 5, 0, 'z', 9
+        db 3, 3, 5, 0, 118, 9           ; #87FF00
         db 1, 1, 0
         db 0, 1, 1
         db 0, 0, 0
         
     piece_l:
-        db 3, 3, 5, 0, 'l', 9
+        db 3, 3, 5, 0, 205, 9           ; #FF5FAF
         db 0, 0, 1
         db 1, 1, 1
         db 0, 0, 0
         
     piece_j:
-        db 3, 3, 5, 0, 'j', 9
+        db 3, 3, 5, 0, 63, 9            ; #5F5FFF
         db 1, 0, 0
         db 1, 1, 1
         db 0, 0, 0
         
     piece_t:
-        db 3, 3, 5, 0, 't', 9
+        db 3, 3, 5, 0, 117, 9           ; #87CEFF
         db 0, 1, 0
         db 1, 1, 1
         db 0, 0, 0
 
     piece_o:
-        db 2, 2, 5, 0, 'o', 4
+        db 2, 2, 5, 0, 214, 4           ; #FFAF00
         db 1, 1
         db 1, 1
 
@@ -102,7 +102,7 @@ section .bss
     ;   - Offset 2: X position (might be negative to account for empty cols)
     ;   - Offset 3: Y position
     ;   - Offset 4: Y position (hard drop)
-    ;   - Offset 5: Piece character
+    ;   - Offset 5: Piece color
     ;   - Offset 6: Array length
     ;   - Offset 7: Array data (1 for solid, 0 for empty). Size defined by Offset 6
     active_piece            resb PIECE_STRUCT_MAX_SIZE

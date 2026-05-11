@@ -8,26 +8,28 @@ TERMINAL_BOARD_HEIGHT   equ 21
 TERMINAL_BOARD_INIT_X   equ 26
 TERMINAL_BOARD_INIT_Y   equ 2
 
-STATS_STAT_OFFSET_X     equ 13  ; Max 6 chars per stat
-STATS_STAT_OFFSET_Y     equ 10
+STATS_STAT_POS_X        equ 13  ; Max 6 chars per stat
+STATS_STAT_POS_Y        equ 10
 STATS_VALUE_LEN         equ 6
 
-NEXT_PIECE_OFFSET_Y     equ 3
-NEXT_PIECE_OFFSET_Y_I   equ 2   ; I is 4 rows long, would overflow
-NEXT_PIECE_OFFSET_X     equ 8
-NEXT_PIECE_OFFSET_X_I   equ 7
-NEXT_PIECE_OFFSET_X_O   equ 9
+NEXT_PIECE_POS_Y        equ 3
+NEXT_PIECE_POS_Y_I      equ 2   ; I is 4 rows long, would overflow
+NEXT_PIECE_POS_X        equ 8
+NEXT_PIECE_POS_X_I      equ 7
+NEXT_PIECE_POS_X_O      equ 9
 
-GAME_OVER_OFFSET_X      equ 43
-GAME_OVER_OFFSET_Y      equ 10
+GAME_OVER_POS_X         equ 43
+GAME_OVER_POS_Y         equ 10
 GAME_OVER_VALUE_LEN     equ 6
 
+MAX_COLOR_ESC_SEQ_SIZE  equ 17  ; Counting two spaces
+
 section .rodata
-    ;# Enter alternate buffer -> clear screen -> hide cursor
+    ; Enter alternate buffer -> clear screen -> hide cursor
     clear_seq           db `\x1b[?1049h\x1b[2J\x1b[3J\x1b[H\x1b[?25l`
     clear_len           equ $-clear_seq
 
-    ;# === PANELS ===
+    ; === PANELS ===
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_stats:
         db 20   ; width
@@ -101,6 +103,14 @@ section .rodata
         db "┃                            ┃", 0
         db "┃       Press [Space]        ┃", 0
         db "┃       to play again.       ┃", 0
+
+    ; === COLORS ===
+    color_prefix_seq            db `\e[48;5;`   ; Background (for visible spaces)
+    color_prefix_seq_len        equ $-color_prefix_seq
+    color_after_code_seq        db `m`
+    color_after_code_seq_len    equ $-color_after_code_seq
+    color_suffix_seq            db `\e[0m`
+    color_suffix_seq_len        equ $-color_suffix_seq
 
 section .text
 
@@ -298,9 +308,10 @@ _print_board:
         jae .return
 
         mov rdi, r12
-        mov rsi, r15
-        mov rdx, r14
-        call _print_board_line
+        mov rsi, GAME_BOARD_WIDTH
+        mov rdx, r15
+        mov r10, r14
+        call _render_buffer_colored
 
         ; Next line
         inc r14
@@ -323,45 +334,93 @@ _print_board:
 ;   - Terminal board: TERMINAL_BOARD_WIDTH
 ; Arguments:
 ;   rdi - Pointer to the start of the game_board buffer line
-;   rdx - X as an integer
-;   r10 - Y as an integer
+;   rsi - X as an integer
+;   rdx - Y as an integer
+; Return:
+;   rax - Number of bytes processed
 _print_board_line:
     push r15
-    mov r15, TERMINAL_BOARD_WIDTH   ; buffer size
-    mov rcx, GAME_BOARD_WIDTH       ; count (width)
+    push r14
+    push r13
+    push r12
+    push rbx
+    
+    mov r15, rsi
+    mov r14, rdx
+    mov rbx, GAME_BOARD_WIDTH   ; read count
 
-    sub rsp, r15
+    push rdi                    ; Save for later use
 
-    mov r10, rsp                    ; dst pointer
-    mov r11, rdi                    ; src pointer
+    mov r8, GAME_BOARD_WIDTH
+    imul r9, r8, MAX_COLOR_ESC_SEQ_SIZE
+    sub rsp, r9
 
-    .dup_byte:
-        mov al, [r11]
-        mov ah, al                  ; dup byte        
-        mov [r10], ax
+    mov r13, rsp        ; dst pointer
+    mov r12, rdi        ; src pointer
 
-        inc r11
-        add r10, 2
-        dec rcx
-        jnz .dup_byte
+    .render_cell:
+        cmp byte [r12], 0x20
+        je .render_space
 
-    mov rbx, r11
-    sub rbx, rdi                ; We return this (bytes read: src_end - src_start)
+        ; Better than movsb for 8-bytes or smaller str. Doesn't matter if
+        ; length != qword, overflow bytes will be overwritten below
+        mov rax, qword [color_prefix_seq]
+        mov qword [r13], rax
+        add r13, color_prefix_seq_len
 
-    mov rdi, rsp
-    mov rax, r10
-    mov r10, rdx
-    mov rdx, rsi
+        movzx edi, byte [r12]
+        mov rsi, r13
+        call _itoa
 
-    mov rsi, rax
-    sub rsi, rsp                ; length = dst_end - dst_start
+        add r13, rax
+
+        movzx eax, byte [color_after_code_seq]
+        mov [r13], al
+        add r13, color_after_code_seq_len
+
+        mov word [r13], 0x2020
+        add r13, 2
+
+        mov eax, [color_suffix_seq]
+        mov [r13], eax
+        add r13, color_suffix_seq_len
+
+        jmp .continue
+
+        .render_space:
+            mov word [r13], 0x2020
+            add r13, 2
+
+        .continue:
+            inc r12
+            dec rbx
+            jnz .render_cell
+
+    mov rdi, rsp        ; arg 1: buffer pointer
+    mov rsi, r13
+    sub rsi, rsp        ; arg 2: length = end_ptr - start_ptr
+    mov rdx, r15        ; arg 3: X
+    mov r10, r14        ; arg 3: Y
     call write_to_screen
     
-    add rsp, r15                ; Restore stack
+    mov r8, GAME_BOARD_WIDTH
+    imul r9, r8, MAX_COLOR_ESC_SEQ_SIZE
+    add rsp, r9         ; Restore stack
+    pop rdi
+
+    mov rax, r12
+    sub rax, rdi        ; We return this (bytes read: src_end - src_start)
+
+    pop rbx
+    pop r12
+    pop r13
+    pop r14
     pop r15
 
-    mov rax, rbx
     ret
+
+
+; =======  Panel Rendering  ================================================= ;
 
 ; Renders the current game score to its designated place on the screen.
 ; Arguments:
@@ -371,8 +430,8 @@ _print_board_line:
 _set_score:
     mov edi, dword [score]
     mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_OFFSET_X
-    mov r10, STATS_STAT_OFFSET_Y
+    mov rdx, STATS_STAT_POS_X
+    mov r10, STATS_STAT_POS_Y
     call _write_int_left_aligned
 
     ret
@@ -385,8 +444,8 @@ _set_score:
 _set_lines:
     mov edi, dword [lines]
     mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_OFFSET_X
-    mov r10, STATS_STAT_OFFSET_Y
+    mov rdx, STATS_STAT_POS_X
+    mov r10, STATS_STAT_POS_Y
     add r10, 1
     call _write_int_left_aligned
 
@@ -400,8 +459,8 @@ _set_lines:
 _set_level:
     movzx edi, byte [level]
     mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_OFFSET_X
-    mov r10, STATS_STAT_OFFSET_Y
+    mov rdx, STATS_STAT_POS_X
+    mov r10, STATS_STAT_POS_Y
     add r10, 2
     call _write_int_left_aligned
 
@@ -413,84 +472,84 @@ _set_level:
 ; Return:
 ;   None
 _set_next_piece:
-    call _clear_next_piece_panel
-
-    push rbx
-
-    movzx ebx, byte [next_piece + 1]    ; Height
-    test rbx, rbx                       ; Height != 0
+    cmp byte [next_piece + 1], 0
     jz .return
 
-    cmp bl, byte [next_piece]           ; Height == Width
+    movzx r8d, byte [next_piece + 1]
+    cmp [next_piece], r8b
     jne .return
+
+    ; --- Height != 0 and Height == Width ---
+    
+    push rbp
+    mov rbp, rsp
 
     push r15
     push r14
     push r13
     push r12
-    push rbp
+    push rbx
 
-    mov r12, rbx                        ; Height counter
-    lea r13, [next_piece + 7]           ; Array pointer
+    call _clear_next_piece_panel
 
-    sub rsp, rbx
-    sub rsp, rbx
+    lea r15, [next_piece + 7]       ; Figure array ptr
+    movzx r14d, byte [next_piece]   ; X counter
+    mov r13, r14                    ; Y counter
 
-    cmp rbx, 4
-    mov r15, NEXT_PIECE_OFFSET_X_I
-    mov r14, NEXT_PIECE_OFFSET_Y_I
-    je .outer_loop_start
+    sub rsp, r13
 
-    mov r14, NEXT_PIECE_OFFSET_Y
+    ; Set special X, Y for i piece
+    mov r12, NEXT_PIECE_POS_X_I
+    mov rbx, NEXT_PIECE_POS_Y_I
+    cmp r14, 4
+    je .render_next_row
 
-    cmp rbx, 2
-    mov r15, NEXT_PIECE_OFFSET_X_O
-    je .outer_loop_start
+    ; Set special X for o piece, Y for the rest
+    mov r12, NEXT_PIECE_POS_X_O
+    mov rbx, NEXT_PIECE_POS_Y
+    cmp r14, 2
+    je .render_next_row
 
-    mov r15, NEXT_PIECE_OFFSET_X
+    ; Set special X for the rest
+    mov r12, NEXT_PIECE_POS_X
 
-    .outer_loop_start:
-        mov rcx, rbx
-        mov rbp, rsp
+    .render_next_row:
+        mov rcx, r14
+        mov rdx, rsp
 
-        .inner_loop_start:
-            movzx rdx, byte [next_piece + 5]
-            cmp byte [r13], 1
+        .render_row:
+            movzx r8d, byte [next_piece + 5]
+            mov r9, 0x20
+            cmp byte [r15], 1
+            cmovne r8, r9       ; If 0 -> 0x20, if 1 -> piece color
 
-            mov rsi, 0x20
-            cmovne rdx, rsi             ; Byte not set -> not piece part
+            mov [rdx], r8
 
-            mov byte [rbp], dl
-            mov byte [rbp+1], dl
-
-            add rbp, 2
-            inc r13
+            inc rdx
+            inc r15
             dec rcx
-            jnz .inner_loop_start
+            jnz .render_row
 
-    .outer_loop_end:
+    .render_next_row_end:
         mov rdi, rsp
-        mov rsi, rbx
-        add rsi, rbx
-        mov rdx, r15
-        mov r10, r14
-        call write_to_screen
+        mov rsi, r14
+        mov rdx, r12
+        mov r10, rbx
+        call _render_buffer_colored 
 
-        inc r14
-        dec r12
-        jnz .outer_loop_start
-    
-    add rsp, rbx
-    add rsp, rbx
-    
-    pop rbp
+        inc rbx     ; Next line
+        dec r13
+        jnz .render_next_row
+
+    pop rbx
     pop r12
     pop r13
     pop r14
     pop r15
-    
+
+    leave
+
     .return:
-        pop rbx
         ret
 
 ; Prepares the Next panel by removing the previous piece.
@@ -563,21 +622,21 @@ render_game_over:
 
     mov edi, [score]
     mov rsi, GAME_OVER_VALUE_LEN
-    mov rdx, GAME_OVER_OFFSET_X
-    mov r10, GAME_OVER_OFFSET_Y
+    mov rdx, GAME_OVER_POS_X
+    mov r10, GAME_OVER_POS_Y
     call _write_int_left_aligned
 
     mov edi, [lines]
     mov rsi, GAME_OVER_VALUE_LEN
-    mov rdx, GAME_OVER_OFFSET_X
-    mov r10, GAME_OVER_OFFSET_Y
+    mov rdx, GAME_OVER_POS_X
+    mov r10, GAME_OVER_POS_Y
     add r10, 1
     call _write_int_left_aligned
 
     movzx edi, byte [level]
     mov rsi, GAME_OVER_VALUE_LEN
-    mov rdx, GAME_OVER_OFFSET_X
-    mov r10, GAME_OVER_OFFSET_Y
+    mov rdx, GAME_OVER_POS_X
+    mov r10, GAME_OVER_POS_Y
     add r10, 2
     call _write_int_left_aligned
 
@@ -782,4 +841,98 @@ _write_int_left_aligned:
     pop r13
     pop r14
     pop r15
+    ret
+
+; Converts a buffer (line/piece part) into colored ANSI blocks and renders them
+; to the screen. To scale the visual output, each cell is duplicated horizontally when
+; rendered.
+; Arguments:
+;   rdi - Source buffer address
+;   rsi - Buffer length (number of cells)
+;   rdx - Screen X position
+;   r10 - Screen Y position
+; Returns:
+;   rax - Number of cells processed
+_render_buffer_colored:
+    push rbp
+    mov rbp, rsp
+
+    push r15
+    push r14
+    push r13
+    push r12
+    push rbx
+
+    push rdi                    ; Save for later use
+
+    imul r8, rsi, MAX_COLOR_ESC_SEQ_SIZE
+    sub rsp, r8
+
+    mov r15, rdx
+    mov r14, r10
+    mov rbx, rsi
+
+    mov r13, rsp        ; dst pointer
+    mov r12, rdi        ; src pointer
+
+    .render_cell:
+        cmp byte [r12], 0x20
+        je .render_space
+
+        ; Better than movsb for 8-bytes or smaller str. Doesn't matter if
+        ; length != qword, overflow bytes will be overwritten below
+        mov rax, qword [color_prefix_seq]
+        mov qword [r13], rax
+        add r13, color_prefix_seq_len
+
+        movzx edi, byte [r12]
+        mov rsi, r13
+        call _itoa
+
+        add r13, rax
+
+        movzx eax, byte [color_after_code_seq]
+        mov [r13], al
+        add r13, color_after_code_seq_len
+
+        mov word [r13], 0x2020
+        add r13, 2
+
+        mov eax, [color_suffix_seq]
+        mov [r13], eax
+        add r13, color_suffix_seq_len
+
+        jmp .continue
+
+        .render_space:
+            mov word [r13], 0x2020
+            add r13, 2
+
+        .continue:
+            inc r12
+            dec rbx
+            jnz .render_cell
+
+    mov rdi, rsp        ; arg 1: buffer pointer
+    mov rsi, r13
+    sub rsi, rsp        ; arg 2: length = end_ptr - start_ptr
+    mov rdx, r15        ; arg 3: X
+    mov r10, r14        ; arg 3: Y
+    call write_to_screen
+    
+    ; Restore stack to the location it was after the 6 register push (6 * 8 = 48 bytes)
+    lea rsp, [rbp - 48]
+
+    pop rdi
+
+    mov rax, r12
+    sub rax, rdi        ; We return this (bytes read: src_end - src_start)
+
+    pop rbx
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+
+    leave
     ret

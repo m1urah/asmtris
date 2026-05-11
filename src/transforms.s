@@ -145,12 +145,12 @@ _erase_piece_from_board:
     mov edi, 0x20
     call _modify_piece_on_board
 
-; Iterates through the active piece's array and writes a specified character to
-; the corresponding coords on the game board. This helper is used for both
-; setting the piece and erasing it.
+; Iterates through the active piece's array and writes a specified value to the
+; corresponding coords on the game board. This helper is used for both setting
+; the piece and erasing it.
 ; Arguments:
 ;   rdi - The char to write to the board: 0x20 to erase, or the piece's specific
-;         character.
+;         color.
 ; Returns:
 ;   None
 _modify_piece_on_board:
@@ -310,7 +310,7 @@ rotate_figure:
     mov qword [active_piece+15], rcx
 
     .draw_piece:
-        movzx edi, byte [active_piece + 5]  ; Piece's char
+        movzx edi, byte [active_piece + 5]  ; Piece's color
         call _modify_piece_on_board
 
     mov rax, r15
