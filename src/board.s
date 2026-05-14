@@ -1,11 +1,10 @@
-global init_board, process_input, gravity_tick, verify_game_over
+default rel
+global init_board, process_board_input, gravity_tick, verify_game_over
 global game_board, active_piece, score, level, lines
 global next_piece, needs_next_piece_redraw, is_paused
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
-extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets
-extern calculate_hard_drop, do_hard_drop
-extern LOCK_DELAY_VALUE
-default rel
+extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets    ; transforms.s
+extern calculate_hard_drop, do_hard_drop, LOCK_DELAY_VALUE
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
@@ -23,7 +22,7 @@ section .rodata
         db 4            ; Bounding box height
         db 4            ; Initial X
         db 0            ; Initial Y
-        db 42           ; Xterm-256 color #00D787
+        db 51           ; Xterm-256 color #00F5FF
         db 16           ; Size of array (array length)
         db 0, 0, 0, 0   ; Array data (1 for solid, 0 for empty)
         db 1, 1, 1, 1
@@ -31,37 +30,37 @@ section .rodata
         db 0, 0, 0, 0
         
     piece_s:
-        db 3, 3, 5, 0, 203, 9           ; #FF5F5F
+        db 3, 3, 5, 0, 46, 9            ; #39FF14
         db 0, 1, 1
         db 1, 1, 0
         db 0, 0, 0
         
     piece_z:
-        db 3, 3, 5, 0, 118, 9           ; #87FF00
+        db 3, 3, 5, 0, 203, 9           ; #FF3131
         db 1, 1, 0
         db 0, 1, 1
         db 0, 0, 0
         
     piece_l:
-        db 3, 3, 5, 0, 205, 9           ; #FF5FAF
+        db 3, 3, 5, 0, 208, 9           ; #FF7A00
         db 0, 0, 1
         db 1, 1, 1
         db 0, 0, 0
         
     piece_j:
-        db 3, 3, 5, 0, 63, 9            ; #5F5FFF
+        db 3, 3, 5, 0, 75, 9            ; #3A86FF
         db 1, 0, 0
         db 1, 1, 1
         db 0, 0, 0
         
     piece_t:
-        db 3, 3, 5, 0, 117, 9           ; #87CEFF
+        db 3, 3, 5, 0, 165, 9           ; #4800ff
         db 0, 1, 0
         db 1, 1, 1
         db 0, 0, 0
 
     piece_o:
-        db 2, 2, 5, 0, 214, 4           ; #FFAF00
+        db 2, 2, 5, 0, 226, 4           ; #FFF200
         db 1, 1
         db 1, 1
 
@@ -107,6 +106,7 @@ section .bss
     ;   - Offset 7: Array data (1 for solid, 0 for empty). Size defined by Offset 6
     active_piece            resb PIECE_STRUCT_MAX_SIZE
     next_piece              resb PIECE_STRUCT_MAX_SIZE
+
 
 section .text
 
@@ -159,15 +159,22 @@ init_board:
 ;   rdi - Pointer to the input buffer
 ;   rsi - Length of the input
 ; Return:
-;   None
-process_input:
-    test rsi, rsi
-    jz .return
+;   rax - -1 on quit, 0 otherwise
+process_board_input:
+    push rbp
+    mov rbp, rsp
 
     push r15
+    push r14
+
+    mov r14, 0          ; No quit
+
+    test rsi, rsi
+    jz .return
+    
     xor r15, r15        ; Down move?
 
-    mov eax, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
+    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
 
     ; Route based on exact bytes read
     cmp rsi, 1
@@ -176,66 +183,69 @@ process_input:
     cmp rsi, 3
     je .handle_3_byte   ; Arrows
     
-    jmp .done           ; Ignore 2-byte or 4+-byte keystrokes
+    jmp .return           ; Ignore 2-byte or 4+-byte keystrokes
 
     .handle_1_byte:
-        ; RSI = 1. We ONLY look at AL
-        cmp al, 'p'
+        ; RSI = 1. We ONLY look at CL
+        cmp cl, 'q'
+        je .do_quit
+
+        cmp cl, 'p'
         je .do_pause
-        cmp al, `\e`
+        cmp cl, `\e`
         je .do_pause
 
         cmp byte [is_paused], 1
-        je .done
+        je .return
 
         ; Allow movement when piece is partially visible (math done by NASM)
         cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS - 1
-        jl .done
+        jl .return
 
-        cmp al, 'a'
+        cmp cl, 'a'
         je .do_left
-        cmp al, 'd'
+        cmp cl, 'd'
         je .do_right
-        cmp al, 'w'
+        cmp cl, 'w'
         je .do_up
-        cmp al, 's'
+        cmp cl, 's'
         je .do_down
-        cmp al, 0x20
+        cmp cl, 0x20
         je .do_space
 
-        jmp .done
+        jmp .return
 
     .handle_3_byte:
         ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
-        and eax, 0x00FFFFFF
+        and ecx, 0x00FFFFFF
 
         cmp byte [is_paused], 1
-        je .done
+        je .return
 
         ; Allow movement when piece is partially visible (math done by NASM)
         cmp byte [active_piece + 3], NUMBER_OF_HIDDEN_ROWS - 1
-        jl .done
+        jl .return
 
-        cmp eax, `\e[D`
+        cmp ecx, `\e[D`
         je .do_left
-        cmp eax, `\e[C`
+        cmp ecx, `\e[C`
         je .do_right
-        cmp eax, `\e[A`
+        cmp ecx, `\e[A`
         je .do_up
-        cmp eax, `\e[B`
+        cmp ecx, `\e[B`
         je .do_down
 
-        jmp .done
+        jmp .return
 
     .do_pause:
         xor byte [is_paused], 1
         mov byte [needs_next_piece_redraw], 1
-        jmp .done
+        jmp .return
 
     .do_up:     ; rotate
         call rotate_figure
         call calculate_hard_drop
-        jmp .done
+        jmp .return
 
     .do_left:   ; (-1, 0)
         mov rdi, -1
@@ -256,7 +266,7 @@ process_input:
         call move_piece
 
         test rax, rax
-        jz .done        ; Move failed, skip score
+        jz .return        ; Move failed, skip score
 
         test r15, r15
         jz .update_hd   ; Not a down move, skip score
@@ -264,12 +274,12 @@ process_input:
         ; --- Score Update ---
         mov rdi, 1
         call update_score
-        jmp .done
+        jmp .return
 
         ; --- Hard Drop Update ---
         .update_hd:
             call calculate_hard_drop
-            jmp .done
+            jmp .return
 
     .do_space:
         call do_hard_drop
@@ -277,10 +287,17 @@ process_input:
         imul rdi, rax, 2    ; 2 points per skipped cell
         call update_score
 
-    .done:
-        pop r15
+        jmp .return
+
+    .do_quit:
+        mov r14, -1
     
     .return:
+        mov rax, r14
+
+        pop r14
+        pop r15
+        leave
         ret
 
 ; Attempts to move the active piece one position down. If the lock delay is

@@ -1,6 +1,7 @@
 global _start
-extern init_board, init_screen, process_input, update_screen, gravity_tick
-extern verify_game_over, render_game_over
+extern init_board, process_board_input, gravity_tick, verify_game_over          ; board.s
+extern init_start_screen, init_board_screen, update_screen, render_game_over    ; screen/
+extern process_start_input
 default rel
 
 section .rodata
@@ -50,13 +51,37 @@ _start:
 ; Return:
 ;   Does not return
 start_game:
+    call init_start_screen
+    
+    .mode_selection:
+        call sleep
+
+        .read_user_input_1:
+            mov rax, 0
+            mov rdi, 0
+            mov rsi, rsp
+            mov rdx, 3
+            syscall
+
+            mov r13, rax    
+            test r13, r13
+            jz .mode_selection       ; No input?
+
+            mov rdi, rsp
+            mov rsi, r13
+            call process_start_input
+
+            cmp rax, 0           ; Wanna quit?
+            jl exit_handler
+            jz .mode_selection
+
     call init_board
-    call init_screen
+    call init_board_screen
 
     .infinity:
         call sleep
 
-        .read_user_input:
+        .read_user_input_2:
             mov rax, 0
             mov rdi, 0
             mov rsi, rsp
@@ -67,12 +92,12 @@ start_game:
             test r13, r13
             jz .continue_loop       ; No input?
 
-            cmp byte [rsp], "q"
-            je exit_handler
-
             mov rdi, rsp
             mov rsi, r13
-            call process_input
+            call process_board_input
+
+            cmp rax, 0           ; Wanna quit?
+            jl exit_handler
 
         .continue_loop:
             call verify_game_over
@@ -129,7 +154,7 @@ init_env:
     mov rax, 13             
     mov rdi, 2              ; SIGINT (CTRL+C)
     lea rsi, [sa_struct]
-    mov rdx, 0              ; Don't wan no oldact
+    mov rdx, 0              ; Don't want no oldact
     mov r10, 8
     syscall
 
@@ -217,6 +242,8 @@ modify_termios:
     %define TCSETS          0x5402
     %define ICANON          0x0002
     %define ECHO            0x0008
+    %define ICRNL           0x0100  ; Disable carriage return to newline conversion
+    %define IXON            0x0400  ; Disallow Ctrl-S/Ctrl-Q flow control
     %define VTIME_OFFSET    5
     %define VMIN_OFFSET     6
 
@@ -233,9 +260,14 @@ modify_termios:
     mov rcx, 8      ; 64 bytes / 8
     rep movsq
 
-    ; Disable flags in c_lflag
-    mov eax, [termios_struct_mod + 12]  ; offset
-    and eax, ~(ICANON | ECHO)           ; bitwise AND NOT
+    ; c_iflag
+    mov eax, [termios_struct_mod + 0]   ; offset
+    and eax, ~(ICRNL | IXON)            ; bitwise AND NOT
+    mov [termios_struct_mod + 0], eax
+
+    ; c_lflag
+    mov eax, [termios_struct_mod + 12]
+    and eax, ~(ICANON | ECHO)
     mov [termios_struct_mod + 12], eax
 
     ; Set VMIN and VTIME to 0 for non-blocking polling
