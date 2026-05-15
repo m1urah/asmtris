@@ -25,7 +25,7 @@ section .rodata
 
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_select_mode:
-        db 61, 17, 10, 3    ; Width, Height, X, Y
+        db 61, 19, 10, 3    ; Width, Height, X, Y
         db "                                                             ", 0   ; idx = 0
         db "  ██████   ███████ ███    ███ ████████ ███████  ███  ███████ ", 0
         db " ██    ██ ██       ████  ████    ██    ██    ██ ███ ██       ", 0
@@ -36,13 +36,15 @@ section .rodata
         db "                    --- CHOOSE A MODE ---                    ", 0
         db "                                                             ", 0
         db "                    [ 1 ] Classic                            ", 0   ; idx = 9
-        db "                    [ 2 ] Level Select                       ", 0
-        db "                    [ 3 ] Infinite Mode                      ", 0
+        db "                    [ 2 ] Sprint                             ", 0
+        db "                    [ 3 ] Endless                            ", 0
         db "                    [ 4 ] Zen / Practice                     ", 0
         db "                                                             ", 0
         db "                                                             ", 0
-        db "                   Press a number to start                   ", 0
-        db "                                                             ", 0  ; idx = 16 
+        db "                   Select a mode to start                    ", 0
+        db "                                                             ", 0
+        db "                   Press q or ESC to exit                    ", 0
+        db "                                                             ", 0  ; idx = 18
          
 
     msg_invalid db "    Invalid Level    ", 0
@@ -115,6 +117,9 @@ process_start_input:
         ; RSI = 1. We ONLY look at CL
         cmp cl, 'q'
         je .do_quit
+        cmp cl, `\e`
+        je .do_quit
+
         cmp cl, 0x0D
         je .do_enter
 

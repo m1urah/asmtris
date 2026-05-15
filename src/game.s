@@ -1,78 +1,17 @@
 default rel
 global init_board, process_board_input, gravity_tick, verify_game_over
-global game_board, active_piece, score, level, lines
-global next_piece, needs_next_piece_redraw, is_paused
+global game_board, score, level, lines, needs_next_piece_redraw, is_paused
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
-extern move_piece, rotate_figure, lock_delay_active, lock_delay, lock_resets    ; transforms.s
-extern calculate_hard_drop, do_hard_drop, LOCK_DELAY_VALUE
+extern spawn_piece, choose_next_piece, move_piece, rotate_figure, lock_delay_active     ; piece.s
+extern lock_delay, lock_resets, calculate_hard_drop, do_hard_drop, active_piece
+extern next_piece, LOCK_DELAY_VALUE, PIECE_STRUCT_MAX_SIZE
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
 GAME_BOARD_HEIGHT       equ 25      ; 4 first lines = hidden (spawn) zone
 GAME_BOARD_SIZE         equ GAME_BOARD_WIDTH * GAME_BOARD_HEIGHT
 
-PIECE_STRUCT_MAX_SIZE   equ 23      ; piece_i is current max
-
 section .rodata
-    ; To have adequate rotation, the I piece uses a 4x4 bounding box, J, L, S,
-    ; T, Z pieces 3x3, and the O piece 2x2 (so that it can't be rotated).
-
-    piece_i:
-        db 4            ; Bounding box width
-        db 4            ; Bounding box height
-        db 4            ; Initial X
-        db 0            ; Initial Y
-        db 51           ; Xterm-256 color #00F5FF
-        db 16           ; Size of array (array length)
-        db 0, 0, 0, 0   ; Array data (1 for solid, 0 for empty)
-        db 1, 1, 1, 1
-        db 0, 0, 0, 0
-        db 0, 0, 0, 0
-        
-    piece_s:
-        db 3, 3, 5, 0, 46, 9            ; #39FF14
-        db 0, 1, 1
-        db 1, 1, 0
-        db 0, 0, 0
-        
-    piece_z:
-        db 3, 3, 5, 0, 203, 9           ; #FF3131
-        db 1, 1, 0
-        db 0, 1, 1
-        db 0, 0, 0
-        
-    piece_l:
-        db 3, 3, 5, 0, 208, 9           ; #FF7A00
-        db 0, 0, 1
-        db 1, 1, 1
-        db 0, 0, 0
-        
-    piece_j:
-        db 3, 3, 5, 0, 75, 9            ; #3A86FF
-        db 1, 0, 0
-        db 1, 1, 1
-        db 0, 0, 0
-        
-    piece_t:
-        db 3, 3, 5, 0, 165, 9           ; #4800ff
-        db 0, 1, 0
-        db 1, 1, 1
-        db 0, 0, 0
-
-    piece_o:
-        db 2, 2, 5, 0, 226, 4           ; #FFF200
-        db 1, 1
-        db 1, 1
-
-    piece_selector:
-        dq piece_i
-        dq piece_s
-        dq piece_z
-        dq piece_l
-        dq piece_j
-        dq piece_t
-        dq piece_o
-
     level_speeds:   ; Lvl 0, 1, 2 ... 29+
         db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
         db 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2
@@ -93,19 +32,6 @@ section .data
     frames_until_drop       db 0
     needs_next_piece_redraw db 0
     is_paused               db 0
-
-section .bss
-    ; Tracks the active piece:
-    ;   - Offset 0: Width (cols)
-    ;   - Offset 1: Height (rows)
-    ;   - Offset 2: X position (might be negative to account for empty cols)
-    ;   - Offset 3: Y position
-    ;   - Offset 4: Y position (hard drop)
-    ;   - Offset 5: Piece color
-    ;   - Offset 6: Array length
-    ;   - Offset 7: Array data (1 for solid, 0 for empty). Size defined by Offset 6
-    active_piece            resb PIECE_STRUCT_MAX_SIZE
-    next_piece              resb PIECE_STRUCT_MAX_SIZE
 
 
 section .text
@@ -345,78 +271,6 @@ gravity_tick:
         call move_piece     ; Move 1 down (0, 1)
 
     .return:
-        ret
-
-
-; =======  New Piece  ======================================================= ;
-
-; Spawns the next piece at its starting (X, Y) coordinates in the hidden zone,
-; then generates a new next piece.
-; Arguments:
-;   None
-; Return:
-;   None
-spawn_piece:
-    lea rsi, [next_piece]           ; src index
-    lea rdi, [active_piece]         ; dst index
-    mov rcx, PIECE_STRUCT_MAX_SIZE  ; How many bytes to copy
-
-    rep movsb
-
-    call choose_next_piece
-    call calculate_hard_drop
-    
-    mov rax, 0
-
-    .return:
-        ret
-
-; Randomly selects the next piece using the getrandom syscall. The piece is
-; displayed on the screen and staged for used by spawn_piece.
-;   None
-; Return:
-;   None
-choose_next_piece:
-    ; 1. Get random byte
-    sub rsp, 8
-
-    mov rax, 318        ; sys_getrandom
-    mov rdi, rsp
-    mov rsi, 1
-    xor rdx, rdx
-    syscall
-
-    cmp rax, 1          ; error (used only for jne)
-    jne .return
-
-    ; 2. Get piece base on 0-6 index
-    mov r8, 7
-
-    movzx eax, byte [rsp]
-    xor rdx, rdx
-    div r8
-    mov rax, rdx
-
-    ; 3. Set new values in next_piece
-    lea r8, [piece_selector]        ; RIP-relative addressing
-    mov rsi, [r8 + rax * 8]         ; src index
-    lea rdi, [next_piece]           ; dst index
-
-    cld
-
-    ; Copy first 4 bytes (pieces do not have same Offset 4)
-    mov rcx, 4
-    rep movsb
-
-    mov byte [rdi], 0
-    inc rdi
-
-    ; Copy remaining bytes
-    mov rcx, PIECE_STRUCT_MAX_SIZE - 4
-    rep movsb
-
-    .return:
-        add rsp, 8
         ret
 
 
