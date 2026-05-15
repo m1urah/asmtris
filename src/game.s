@@ -1,6 +1,7 @@
 default rel
 global init_board, process_board_input, gravity_tick, verify_game_over
-global game_board, score, level, lines, needs_next_piece_redraw, is_paused
+global game_board, needs_next_piece_redraw, is_paused, game_mode, game_over_toggle
+global score, lines, level, next_level, speed, lines_left, elapsed_seconds
 global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 extern spawn_piece, choose_next_piece, move_piece, rotate_figure, lock_delay_active     ; piece.s
 extern lock_delay, lock_resets, calculate_hard_drop, do_hard_drop, active_piece
@@ -10,6 +11,8 @@ NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
 GAME_BOARD_HEIGHT       equ 25      ; 4 first lines = hidden (spawn) zone
 GAME_BOARD_SIZE         equ GAME_BOARD_WIDTH * GAME_BOARD_HEIGHT
+
+MAX_LEVEL               equ 29
 
 section .rodata
     level_speeds:   ; Lvl 0, 1, 2 ... 29+
@@ -25,14 +28,19 @@ section .data
     ;       oo        ss    zz  lll  jjj  ttt
     game_board              times GAME_BOARD_SIZE db 0x20
 
+    ; Stats
     score                   dd 0
     lines                   dd 0
     level                   db 0
-    
-    frames_until_drop       db 0
+    next_level              db 1
+    speed                   db 0
+    lines_left              db 40
+    elapsed_seconds         dw 0
+
+    game_mode               db 0
     needs_next_piece_redraw db 0
     is_paused               db 0
-
+    game_over_toggle        db 0    ; 0 = no game over
 
 section .text
 
@@ -40,10 +48,12 @@ section .text
 
 ; Sets the initial state of the board.
 ; Arguments:
-;   None
+;   rdi - Game mode
 ; Return:
 ;   None
 init_board:
+    mov byte [game_mode], dil
+
     ; Set initial state
     mov rax, 0x20
 
@@ -65,7 +75,7 @@ init_board:
 
     movzx eax, byte [level]
     mov r8b, [level_speeds + rax]       ; Current level speed
-    mov byte [frames_until_drop], r8b   ; Reset timer
+    mov byte [speed], r8b   ; Reset timer
 
     mov byte [needs_next_piece_redraw], 1
     mov byte [is_paused], 0
@@ -259,12 +269,12 @@ gravity_tick:
     mov byte [needs_next_piece_redraw], 1
 
     .continue:
-        dec byte [frames_until_drop]
+        dec byte [speed]
         jnz .return
 
         movzx eax, byte [level]
         mov r8b, [level_speeds + rax]       ; Current level speed
-        mov byte [frames_until_drop], r8b   ; Reset timer
+        mov byte [speed], r8b   ; Reset timer
 
         xor rdi, rdi
         mov rsi, 1

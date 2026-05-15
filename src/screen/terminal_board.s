@@ -1,18 +1,20 @@
 default rel
 global init_board_screen, update_screen, panel_main
-extern draw_panel, write_to_screen, itoa, render_buffer_colored         ; utils.s
-extern write_int_left_aligned, write_to_screen     
-extern game_board, next_piece, score, lines, level, is_paused           ; board.s
-extern needs_next_piece_redraw, GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
+extern draw_panel, write_to_screen, itoa, render_buffer_colored                     ; utils.s
+extern write_to_screen, write_int_right_aligned, write_str_left_aligned     
+extern write_formatted_sec
+extern game_board, next_piece, score, lines, level, next_level, speed, lines_left   ; board.s
+extern elapsed_seconds, game_mode, needs_next_piece_redraw, is_paused
+extern game_over_toggle, GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
 
 TERMINAL_BOARD_WIDTH    equ 26
 TERMINAL_BOARD_HEIGHT   equ 21
 TERMINAL_BOARD_INIT_X   equ 26
 TERMINAL_BOARD_INIT_Y   equ 2
 
-STATS_STAT_POS_X        equ 13  ; Max 6 chars per stat
-STATS_STAT_POS_Y        equ 10
-STATS_VALUE_LEN         equ 6
+STATS_POS_X             equ 13
+STATS_POS_Y             equ 9
+STATS_VALUE_LEN         equ 6   ; Max chars per stat
 
 NEXT_PIECE_POS_Y        equ 3
 NEXT_PIECE_POS_Y_I      equ 2   ; I is 4 rows long, would overflow
@@ -24,19 +26,54 @@ section .rodata
     clear_seq           db `\x1b[2J`
     clear_len           equ $-clear_seq
 
+    on_str              db 'ON', 0
+    off_str             db 'OFF', 0
+
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
-    panel_stats:
+    panel_stats_classic:
         db 20   ; width
         db 6    ; height
         db 1    ; col (X)
         db 8    ; line (Y)
         ; utf-8 chars are multi-byte, null terminator marks end of row
         db "┏━━━━━━━Stats━━━━━━┓", 0
-        db "┃ Top            X ┃", 0
+        db "┃ Score          X ┃", 0
+        db "┃ Level          X ┃", 0
+        db "┃ Lines          X ┃", 0
+        db "┃ Next Level     X ┃", 0
+        db "┗━━━━━━━━━━━━━━━━━━┛", 0
+
+    panel_stats_sprint:
+        db 20, 6, 1, 8
+        db "┏━━━━━━━Stats━━━━━━┓", 0
+        db "┃ Time       XX:XX ┃", 0
+        db "┃ Level          X ┃", 0
+        db "┃ Lines          X ┃", 0
+        db "┃ Lines Left     X ┃", 0
+        db "┗━━━━━━━━━━━━━━━━━━┛", 0
+
+    panel_stats_endless:
+        db 20, 5, 1, 8
+        db "┏━━━━━━━Stats━━━━━━┓", 0
         db "┃ Score          X ┃", 0
         db "┃ Lines          X ┃", 0
-        db "┃ Level          X ┃", 0
+        db "┃ Speed          X ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
+
+    panel_stats_practice:
+        db 20, 6, 1, 8
+        db "┏━━━━━━━Stats━━━━━━┓", 0
+        db "┃ Score          X ┃", 0
+        db "┃ Lines          X ┃", 0
+        db "┃ Speed          X ┃", 0
+        db "┃ Game Over      X ┃", 0
+        db "┗━━━━━━━━━━━━━━━━━━┛", 0
+
+    panel_stats_selector:
+        dq panel_stats_classic
+        dq panel_stats_sprint
+        dq panel_stats_endless
+        dq panel_stats_practice
 
     panel_next:
         db 20, 6, 1, 1
@@ -101,7 +138,10 @@ init_board_screen:
     mov rdx, clear_len
     syscall
 
-    mov rdi, panel_stats
+    movzx r8, byte [game_mode]
+    dec r8                          ; mode starts at 1, offset at 0
+    lea r9, [panel_stats_selector]  ; RIP-relative addressing
+    mov rdi, [r9 + r8 * 8]          ; src index
     call draw_panel
 
     mov rdi, panel_next
@@ -130,9 +170,7 @@ update_screen:
     je .display_paused_graphics
 
     call _print_board
-    call _set_score
-    call _set_level
-    call _set_lines
+    call update_stats
 
     cmp byte [needs_next_piece_redraw], 1
     jnz .return
@@ -206,57 +244,163 @@ _print_board:
         ret
 
 
-; =======  Panel Rendering  ================================================= ;
+; =======  Stats Panel  ===================================================== ;
 
-; Renders the current game score to its designated place on the screen.
+; Updates the stats panel based on the current game mode.
 ; Arguments:
 ;   None
 ; Return:
 ;   None
-_set_score:
-    mov edi, dword [score]
+update_stats:
+    movzx r8d, byte [game_mode]
+    
+    cmp r8, 1
+    je .classic
+
+    cmp r8, 2
+    je .sprint
+
+    cmp r8, 3
+    je .endless
+
+    jmp .practice
+
+    .classic:
+        mov edi, dword [score]
+        mov rsi, 0
+        call _set_int_stat
+
+        movzx edi, byte [level]
+        mov rsi, 1
+        call _set_int_stat
+
+        mov edi, dword [lines]
+        mov rsi, 2
+        call _set_int_stat
+
+        mov rsi, 3
+
+        movzx edi, byte [next_level]
+        cmp dil, byte [level]
+        jne .int_level
+
+        ; If levels are equals means there's no next level
+        .str_level:
+            sub rsp, 2
+            mov byte [rsp], '-'
+            mov byte [rsp + 1], 0
+            
+            mov rdi, rsp
+            call _set_str_stat
+
+            add rsp, 2
+            jmp .return
+
+        .int_level:
+            call _set_int_stat
+            jmp .return
+
+    .sprint:
+        movzx edi, word [elapsed_seconds]
+        mov rsi, STATS_VALUE_LEN
+        mov rdx, STATS_POS_X
+        mov r10, STATS_POS_Y
+        call write_formatted_sec
+
+        movzx edi, byte [level]
+        mov rsi, 1
+        call _set_int_stat
+
+        mov edi, dword [lines]
+        mov rsi, 2
+        call _set_int_stat
+
+        movzx edi, byte [lines_left]
+        mov rsi, 3
+        call _set_int_stat
+
+        jmp .return
+
+    .endless:
+        mov edi, dword [score]
+        mov rsi, 0
+        call _set_int_stat
+
+        mov edi, dword [lines]
+        mov rsi, 1
+        call _set_int_stat
+
+        movzx edi, byte [speed]
+        mov rsi, 2
+        call _set_int_stat
+
+        jmp .return
+
+    .practice:
+        mov edi, dword [score]
+        mov rsi, 0
+        call _set_int_stat
+
+        mov edi, dword [lines]
+        mov rsi, 1
+        call _set_int_stat
+
+        movzx edi, byte [speed]
+        mov rsi, 2
+        call _set_int_stat
+
+        mov rdi, off_str
+        cmp byte [game_over_toggle], 0
+        je .set_game_over
+
+        mov rdi, on_str
+        
+        .set_game_over:
+            mov rsi, 3
+            call _set_str_stat
+    
+    .return:
+        ret
+
+; Renders a specific INT stat to the stats panel.
+; Arguments:
+;   rdi - Stat value
+;   rsi - Y offset relative to STATS_POS_Y
+; Return:
+;   None
+_set_int_stat:
+    mov r8, rsi
+
+    ; rdi already set
     mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_POS_X
-    mov r10, STATS_STAT_POS_Y
-    call write_int_left_aligned
+    mov rdx, STATS_POS_X
+    mov r10, STATS_POS_Y
+    add r10, r8
+    call write_int_right_aligned
 
     ret
 
-; Renders the number of cleared lines to its designated place on the screen.
+; Renders a specific STRING stat to the stats panel.
 ; Arguments:
-;   None
+;   rdi - Stat value pointer
+;   rsi - Y offset relative to STATS_POS_Y
 ; Return:
 ;   None
-_set_lines:
-    mov edi, dword [lines]
+_set_str_stat:
+    mov r8, rsi
+
+    ; rdi already set
     mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_POS_X
-    mov r10, STATS_STAT_POS_Y
-    add r10, 1
-    call write_int_left_aligned
+    mov rdx, STATS_POS_X
+    mov r10, STATS_POS_Y
+    add r10, r8
+    call write_str_left_aligned
 
     ret
 
-; Renders the current level to its designated place on the screen.
-; Arguments:
-;   None
-; Return:
-;   None
-_set_level:
-    movzx edi, byte [level]
-    mov rsi, STATS_VALUE_LEN
-    mov rdx, STATS_STAT_POS_X
-    mov r10, STATS_STAT_POS_Y
-    add r10, 2
-    call write_int_left_aligned
 
-    ret
+; ======= Next Piece Panel  ================================================= ;
 
-; Renders the next piece to the screen.
-; Arguments:
-;   None
-; Return:
-;   None
 _set_next_piece:
     cmp byte [next_piece + 1], 0
     jz .return

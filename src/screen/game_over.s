@@ -1,6 +1,6 @@
 default rel
 global render_game_over
-extern draw_panel, write_int_left_aligned   ; utils.s
+extern draw_panel, write_int_right_aligned   ; utils.s
 extern score, lines, level                  ; board.s
 extern panel_main                           ; terminal_board.s
 
@@ -45,20 +45,20 @@ render_game_over:
     mov rsi, GAME_OVER_VALUE_LEN
     mov rdx, GAME_OVER_POS_X
     mov r10, GAME_OVER_POS_Y
-    call write_int_left_aligned
+    call write_int_right_aligned
 
     mov edi, [lines]
     mov rsi, GAME_OVER_VALUE_LEN
     mov rdx, GAME_OVER_POS_X
     mov r10, GAME_OVER_POS_Y
     add r10, 1
-    call write_int_left_aligned
+    call write_int_right_aligned
 
     movzx edi, byte [level]
     mov rsi, GAME_OVER_VALUE_LEN
     mov rdx, GAME_OVER_POS_X
     mov r10, GAME_OVER_POS_Y
     add r10, 2
-    call write_int_left_aligned
+    call write_int_right_aligned
 
     ret

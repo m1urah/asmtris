@@ -65,16 +65,17 @@ start_game:
 
             mov r13, rax    
             test r13, r13
-            jz .mode_selection       ; No input?
+            jz .mode_selection  ; No input?
 
             mov rdi, rsp
             mov rsi, r13
             call process_start_input
 
-            cmp rax, 0           ; Wanna quit?
+            cmp rax, 0          ; Wanna quit?
             jl exit_handler
             jz .mode_selection
 
+    mov rdi, rax                ; Game mode
     call init_board
     call init_board_screen
 

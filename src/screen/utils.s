@@ -1,10 +1,10 @@
 default rel
-global itoa, strlen, write_to_screen, write_int_left_aligned, render_buffer_colored, draw_panel
+global itoa, strlen, write_to_screen, render_buffer_colored, draw_panel
+global write_int_right_aligned, write_str_left_aligned, write_formatted_sec
 
 MAX_COLOR_ESC_SEQ_SIZE  equ 17  ; Counting two spaces
 
 section .rodata
-    ; === COLORS ===
     color_prefix_seq            db `\e[48;5;`   ; Background (for visible spaces)
     color_prefix_seq_len        equ $-color_prefix_seq
     color_after_code_seq        db `m`
@@ -15,7 +15,7 @@ section .rodata
 
 section .text
 
-; =======  Terminal Rendering  ============================================== ;
+; =======  Screen Rendering  ================================================ ;
 
 ; Writes the given str to the screen at (X,Y), where (1,1) is the top-left
 ; corner. We'll use the `\x1b[Y;XH` cursor control sequence to position it.
@@ -106,75 +106,123 @@ write_to_screen:
         mov rax, 0
         ret
 
+
+; =======  Panel Rendering  ================================================= ;
+
 ; Renders an integer value to the screen with right alignment. If the rendered
 ; digit count is smaller than the specified maximum digit count, left padding
 ; is added so the value remains visually aligned.
 ; Arguments:
 ;   rdi - Integer value to render
-;   rsi - Length of destination field. Must be greater or equal than the maximum
-;         digit count for the rendered value (e.g. 3 for rdi = 120)
+;   rsi - Length of destination field (for alignment padding)
 ;   rdx - X coordinate
 ;   r10 - Y coordinate
-;   r8 - Length 
 ; Return:
 ;   None
-write_int_left_aligned:
+write_int_right_aligned:
+    push rbp
+    mov rbp, rsp
+
     push r15
     push r14
     push r13
-    push r12
 
     mov r15, rsi
     mov r14, rdx
     mov r13, r10
-    
+
     sub rsp, r15
 
     ; rdi already set
     mov rsi, rsp
     call itoa
 
-    mov r12, rax        ; Size of str
+    mov rdi, rsp
+    mov rsi, r15
+    mov rdx, r14
+    mov r10, r13
+    call write_str_left_aligned
 
-    mov r8, r15
-    sub r8, r12         ; Alignment
+    mov rsp, rbp
+    pop r13
+    pop r14
+    pop r15
+
+    leave
+    ret
+
+; Renders a null-terminated string to the screen with right alignment. If the
+; length of the string is smaller than the specified maximum char count, left
+; padding is added so the value remains visually aligned.
+; Using a non-null terminated string is undefined behavior.
+; Arguments:
+;   rdi - String pointer
+;   rsi - Length of destination field (for alignment padding)
+;   rdx - X coordinate
+;   r10 - Y coordinate
+; Return:
+;   None
+write_str_left_aligned:
+    push rbp
+    mov rbp, rsp
+
+    push r15
+    push r14
+    push r13
+    push r12
+
+    mov r15, rdi
+    mov r13, rdx
+    mov r12, r10
+
+    mov r14, rdi
+    dec r14
+
+    .string_length:
+        inc r14
+        cmp byte [r14], 0
+        jne .string_length
+
+    sub r14, rdi     ; Size of str = end_ptr - start_ptr
+
+    mov r8, rsi
+    sub r8, r14     ; Alignment
     jz .print_value
 
     ; --- Alignment required ---
     sub rsp, r8         ; Reserve space BEFORE the str to place alignment
-    mov r9, rsp
+
+    cld                 ; Makes sure stosb runs forward
 
     mov rax, 0x20
     mov rdi, rsp
     mov rcx, r8
-    cld                 ; Makes sure stosb runs forward
     rep stosb
 
     push r8
 
-    mov rdi, r9         ; push advances rsp
+    mov rdi, rsp
     mov rsi, r8
-    mov rdx, r14
-    mov r10, r13
+    mov rdx, r13
+    mov r10, r12
     call write_to_screen
 
     pop r8
-    add rsp, r8
+    mov rsp, rbp
 
     .print_value:
-        mov rdi, rsp
-        mov rsi, r12
-        mov rdx, r14
-        add rdx, r8
-        mov r10, r13
+        mov rdi, r15
+        mov rsi, r14
+        mov rdx, r13
+        add rdx, r8     ; Shift X by added padding
+        mov r10, r12
         call write_to_screen
-
-    add rsp, r15
 
     pop r12
     pop r13
     pop r14
     pop r15
+    leave
     ret
 
 ; Converts a buffer (line/piece part) into colored ANSI blocks and renders them
@@ -330,6 +378,97 @@ draw_panel:
         pop r15
 
         ret
+
+
+; =======  Time  ============================================================ ;
+
+SECONDS_IN_MINUTE   equ 60
+TIME_FORMAT_LEN     equ 6   ; length of 'HH:SS' + \0
+
+; Formats a given time value in seconds as MM:SS, then renders the output
+; right-aligned based on rsi.
+; Arguments:
+;   rdi - Time value in seconds
+;   rsi - Length of destination field (for alignment padding)
+;   rdx - X coordinate
+;   r10 - Y coordinate
+; Return:
+;   None
+write_formatted_sec:
+    push rbp
+    mov rbp, rsp
+
+    push r15
+    push r14
+    push r13
+    push r12
+
+    mov r15, rsi
+    mov r14, rdx
+    mov r13, r10
+
+    mov r8, SECONDS_IN_MINUTE
+    xor rdx, rdx
+    mov rax, rdi
+    div r8
+
+    mov r12, rdx        ; Seconds
+
+    sub rsp, TIME_FORMAT_LEN
+    mov r9, rsp         ; current character ptr
+    push r9
+
+    mov rdi, rax
+    mov rsi, r9
+    call itoa           ; Converts minutes (this) and second (later) to string
+
+    pop r9
+    
+    cmp rax, 2
+    je .add_colon
+
+    ; Pad with zero (e.g. if '1' -> '01', if '0' -> '00')
+    movzx r8d, byte [r9]
+    mov byte [r9 + 1], r8b
+    mov byte [r9], '0'
+
+    .add_colon:
+        add r9, 2
+        mov byte [r9], ':'
+        inc r9
+
+    push r9
+
+    mov rdi, r12
+    mov rsi, r9
+    call itoa
+
+    pop r9
+
+    cmp rax, 2
+    je .write_str
+
+    movzx r8d, byte [r9]
+    mov byte [r9 + 1], r8b
+    mov byte [r9], '0'
+
+    add r9, 2
+    mov byte [r9], 0
+
+    .write_str:
+        mov rdi, rsp
+        mov rsi, r15
+        mov rdx, r14
+        mov r10, r13
+        call write_str_left_aligned
+
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+
+    leave
+    ret
 
 
 ; =======  Utils  =========================================================== ;
