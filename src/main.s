@@ -1,7 +1,7 @@
 global _start
-extern init_board, process_board_input, gravity_tick, verify_game_over          ; board.s
-extern init_start_screen, init_board_screen, update_screen, render_game_over    ; screen/
-extern process_start_input
+extern init_board, process_board_input, gravity_tick, verify_game_over          ; game.s
+extern init_start_screen, init_board_screen, update_screen, process_start_input ; screen/
+extern init_game_over_screen, process_game_over_input
 default rel
 
 section .rodata
@@ -20,7 +20,11 @@ section .rodata
 
 
     ; ======  STRINGS  ===================================================== #
-    ; disables buffer -> show cursor
+    ; Enter alternate buffer -> hide cursor
+    start_seq               db `\x1b[?1049h\x1b[3J\x1b[H\x1b[?25l`
+    start_len               equ $-start_seq
+    
+    ; Disables buffer -> show cursor
     return_seq              db `\x1b[?1049l\x1b[?25h`
     return_len              equ $-return_seq
 
@@ -43,85 +47,26 @@ _start:
     call init_env
     sub rsp, 4                      ; User input buffer
 
-; Starts a new game by resetting game state, initializing the board and screen,
-; and entering the main game loop, where input, physics are processed until end
-; of game.
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [start_seq]
+    mov rdx, start_len
+    syscall
+
+; Displays the start screen and handles user input for game mode configuration.
+; Loops until a selection is confirmed, at which point starts new game, or
+; terminates the process if the user chooses to exit.
 ; Arguments:
 ;   None
 ; Return:
-;   Does not return
-start_game:
+;   None
+start_screen:
     call init_start_screen
     
     .mode_selection:
         call sleep
 
-        .read_user_input_1:
-            mov rax, 0
-            mov rdi, 0
-            mov rsi, rsp
-            mov rdx, 3
-            syscall
-
-            mov r13, rax    
-            test r13, r13
-            jz .mode_selection  ; No input?
-
-            mov rdi, rsp
-            mov rsi, r13
-            call process_start_input
-
-            cmp rax, 0          ; Wanna quit?
-            jl exit_handler
-            jz .mode_selection
-
-    mov rdi, rax                ; Game mode
-    call init_board
-    call init_board_screen
-
-    .infinity:
-        call sleep
-
-        .read_user_input_2:
-            mov rax, 0
-            mov rdi, 0
-            mov rsi, rsp
-            mov rdx, 3
-            syscall
-
-            mov r13, rax    
-            test r13, r13
-            jz .continue_loop       ; No input?
-
-            mov rdi, rsp
-            mov rsi, r13
-            call process_board_input
-
-            cmp rax, 0           ; Wanna quit?
-            jl exit_handler
-
-        .continue_loop:
-            call verify_game_over
-            test rax, rax
-            jnz game_over
-
-            call gravity_tick
-            call update_screen
-            jmp .infinity
-
-; Displays the final game screen and waits for user input to either restart the
-; game or exit the program.
-; Arguments:
-;   None
-; Return:
-;   Does not return (either restarts game or exits process)
-game_over:
-    call render_game_over
-
-    .get_user_decision:
-        call sleep
-
-        ; Read user input
+        ; --- Read user input --
         mov rax, 0
         mov rdi, 0
         mov rsi, rsp
@@ -130,15 +75,97 @@ game_over:
 
         mov r13, rax    
         test r13, r13
-        jz .get_user_decision   ; No input?
+        jz .mode_selection  ; No input?
 
-        cmp byte [rsp], "q"
+        mov rdi, rsp
+        mov rsi, r13
+        call process_start_input
+
+        cmp rax, 0          ; Wanna quit?
+        jl exit_handler
+        jz .mode_selection
+
+    ; Falls through to start_game
+
+; Starts a new game by resetting game state, initializing the board and screen,
+; and entering the main game loop, where input, physics are processed until end
+; of game.
+; Arguments:
+;   None
+; Return:
+;   None
+start_game:
+    call init_board
+    call init_board_screen
+
+    .infinity:
+        call sleep
+
+        ; --- Read user input --
+        mov rax, 0
+        mov rdi, 0
+        mov rsi, rsp
+        mov rdx, 3
+        syscall
+
+        mov r13, rax    
+        test r13, r13
+        jz .continue_loop       ; No input?
+
+        mov rdi, rsp
+        mov rsi, r13
+        call process_board_input
+
+        cmp rax, 0           ; Wanna quit?
+        jl exit_handler
+
+        .continue_loop:
+            call verify_game_over
+            test rax, rax
+            jnz game_over
+
+            call gravity_tick
+            call update_screen
+        
+        jmp .infinity
+
+; Displays the final game screen and waits for user input to either restart the
+; game or exit the program.
+; Arguments:
+;   None
+; Return:
+;   Does not return (either restarts game or exits process)
+game_over:
+    call init_game_over_screen
+
+    .option_selection:
+        call sleep
+
+        ; --- Read user input --
+        mov rax, 0
+        mov rdi, 0
+        mov rsi, rsp
+        mov rdx, 3
+        syscall
+
+        mov r13, rax    
+        test r13, r13
+        jz .option_selection   ; No input?
+
+        mov rdi, rsp
+        mov rsi, r13
+        call process_game_over_input
+
+        cmp rax, -1          ; Wanna quit?
         je exit_handler
 
-        cmp byte [rsp], 0x20
+        cmp rax, 1
         je start_game
 
-        jmp .get_user_decision
+        cmp rax, 2
+        je start_screen
+        
+        jmp .option_selection
 
 
 ; =======  Environment  ===================================================== ;

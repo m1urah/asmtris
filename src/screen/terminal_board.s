@@ -1,11 +1,12 @@
 default rel
 global init_board_screen, update_screen, panel_main
-extern draw_panel, write_to_screen, itoa, render_buffer_colored                     ; utils.s
+extern MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE                   ; screen/start.s
+extern draw_panel, write_to_screen, itoa, render_buffer_colored                 ; utils.s
 extern write_to_screen, write_int_right_aligned, write_str_left_aligned     
-extern write_formatted_sec
-extern game_board, next_piece, score, lines, level, next_level, speed, lines_left   ; board.s
-extern elapsed_seconds, game_mode, needs_next_piece_redraw, is_paused
-extern game_over_toggle, GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
+extern write_formatted_sec, clear_screen
+extern game_board, next_piece, score, lines, current_level, next_level, speed   ; game.s
+extern lines_left, elapsed_seconds, game_mode, needs_next_piece_redraw
+extern is_paused, game_over_off, GAME_BOARD_WIDTH, NUMBER_OF_HIDDEN_ROWS
 
 TERMINAL_BOARD_WIDTH    equ 26
 TERMINAL_BOARD_HEIGHT   equ 21
@@ -23,9 +24,6 @@ NEXT_PIECE_POS_X_I      equ 7
 NEXT_PIECE_POS_X_O      equ 9
 
 section .rodata
-    clear_seq           db `\x1b[2J`
-    clear_len           equ $-clear_seq
-
     on_str              db 'ON', 0
     off_str             db 'OFF', 0
 
@@ -131,15 +129,9 @@ section .text
 ; Return:
 ;   None
 init_board_screen:
-    ; Clear screen
-    mov rax, 1
-    mov rdi, 1
-    lea rsi, [clear_seq]
-    mov rdx, clear_len
-    syscall
+    call clear_screen
 
     movzx r8, byte [game_mode]
-    dec r8                          ; mode starts at 1, offset at 0
     lea r9, [panel_stats_selector]  ; RIP-relative addressing
     mov rdi, [r9 + r8 * 8]          ; src index
     call draw_panel
@@ -254,13 +246,13 @@ _print_board:
 update_stats:
     movzx r8d, byte [game_mode]
     
-    cmp r8, 1
+    cmp r8, MODE_CLASSIC
     je .classic
 
-    cmp r8, 2
+    cmp r8, MODE_SPRINT
     je .sprint
 
-    cmp r8, 3
+    cmp r8, MODE_ENDLESS
     je .endless
 
     jmp .practice
@@ -270,7 +262,7 @@ update_stats:
         mov rsi, 0
         call _set_int_stat
 
-        movzx edi, byte [level]
+        movzx edi, byte [current_level]
         mov rsi, 1
         call _set_int_stat
 
@@ -281,7 +273,7 @@ update_stats:
         mov rsi, 3
 
         movzx edi, byte [next_level]
-        cmp dil, byte [level]
+        cmp dil, byte [current_level]
         jne .int_level
 
         ; If levels are equals means there's no next level
@@ -307,7 +299,7 @@ update_stats:
         mov r10, STATS_POS_Y
         call write_formatted_sec
 
-        movzx edi, byte [level]
+        movzx edi, byte [current_level]
         mov rsi, 1
         call _set_int_stat
 
@@ -349,11 +341,11 @@ update_stats:
         mov rsi, 2
         call _set_int_stat
 
-        mov rdi, off_str
-        cmp byte [game_over_toggle], 0
+        mov rdi, on_str
+        cmp byte [game_over_off], 0
         je .set_game_over
 
-        mov rdi, on_str
+        mov rdi, off_str
         
         .set_game_over:
             mov rsi, 3
@@ -401,6 +393,12 @@ _set_str_stat:
 
 ; ======= Next Piece Panel  ================================================= ;
 
+; Renders the next piece in the "Next" panel. Clears the previous piece and
+; draws the new one centered based on its dimensions.
+; Arguments:
+;   None
+; Return:
+;   None
 _set_next_piece:
     cmp byte [next_piece + 1], 0
     jz .return

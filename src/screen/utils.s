@@ -1,10 +1,18 @@
 default rel
 global itoa, strlen, write_to_screen, render_buffer_colored, draw_panel
 global write_int_right_aligned, write_str_left_aligned, write_formatted_sec
+global draw_selection, clear_screen
 
 MAX_COLOR_ESC_SEQ_SIZE  equ 17  ; Counting two spaces
+ANSI_INVERT_LEN         equ 4   ; Both \e[7m and \e[0m are 4 bytes
 
 section .rodata
+    clear_seq           db `\x1b[2J`
+    clear_len           equ $-clear_seq
+
+    ansi_invert_on              db `\e[7m`
+    ansi_invert_off             db `\e[0m`
+
     color_prefix_seq            db `\e[48;5;`   ; Background (for visible spaces)
     color_prefix_seq_len        equ $-color_prefix_seq
     color_after_code_seq        db `m`
@@ -14,6 +22,20 @@ section .rodata
 
 
 section .text
+
+; Clear the screen.
+; Arguments:
+;   None
+; Return:
+;   None
+clear_screen:
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [clear_seq]
+    mov rdx, clear_len
+    syscall
+
+    ret
 
 ; =======  Screen Rendering  ================================================ ;
 
@@ -123,6 +145,9 @@ write_int_right_aligned:
     push rbp
     mov rbp, rsp
 
+    sub rsp, rsi
+    dec rsp         ; Null terminator (set by itoa)
+
     push r15
     push r14
     push r13
@@ -131,19 +156,21 @@ write_int_right_aligned:
     mov r14, rdx
     mov r13, r10
 
-    sub rsp, r15
-
-    ; rdi already set
-    mov rsi, rsp
+    ; rdi already set by caller
+    mov rsi, rbp
+    sub rsi, r15
+    dec rsi
     call itoa
 
-    mov rdi, rsp
+    mov rdi, rbp
+    sub rdi, r15
+    dec rdi
+
     mov rsi, r15
     mov rdx, r14
     mov r10, r13
     call write_str_left_aligned
 
-    mov rsp, rbp
     pop r13
     pop r14
     pop r15
@@ -190,7 +217,7 @@ write_str_left_aligned:
     jz .print_value
 
     ; --- Alignment required ---
-    sub rsp, r8         ; Reserve space BEFORE the str to place alignment
+    sub rsp, r8         ; Print space BEFORE the str to place alignment
 
     cld                 ; Makes sure stosb runs forward
 
@@ -199,9 +226,10 @@ write_str_left_aligned:
     mov rcx, r8
     rep stosb
 
+    mov r9, rsp
     push r8
 
-    mov rdi, rsp
+    mov rdi, r9
     mov rsi, r8
     mov rdx, r13
     mov r10, r12
@@ -380,6 +408,84 @@ draw_panel:
         ret
 
 
+; =======  Selector Drawing  ================================================ ;
+
+; Highlights the currently selected menu option using text color inversion.
+; Arguments:
+;   rdi - Menu buffer pointer
+;   rsi - Menu field length
+;   rdx - X coordinate
+;   r10 - Y coordinate
+; Returns:
+;   None
+draw_selection:
+    push rbp
+    mov rbp, rsp
+
+    mov r8, rsi
+    add r8, ANSI_INVERT_LEN * 2
+    sub rsp, r8
+
+    lea r8, [rdi + 4]       ; src ptr
+    mov r9, rsp             ; dst ptr
+
+    ; --- 1. Enable invert colors ---
+    mov eax, dword [ansi_invert_on]
+    mov dword [r9], eax
+
+    add r9, ANSI_INVERT_LEN
+
+    ; --- 2. Add menu option text ---
+    ; We are using multi-byte utf-8 chars, we need a loop
+    mov r11, r10            ; Rows left counter
+    test r10, r10
+    jz .continue
+
+    .find_start_of_selection:
+        .traverse_row:
+            inc r8
+            cmp byte [r8], 0
+            jnz .traverse_row
+
+        dec r11
+        jnz .find_start_of_selection
+
+    inc r8                          ; At selection's row
+
+    .continue:  
+        add r8, rdx
+        mov r11, rdi                    ; Save to use later
+    
+    mov rcx, rsi
+    mov rsi, r8
+    mov rdi, r9
+    rep movsb                       ; rdi now points to the end of the copied string
+
+    mov r9, rdi
+
+    ; --- 3. Disable invert colors ---
+    mov eax, dword [ansi_invert_off]
+    mov dword [r9], eax
+    
+    add r9, ANSI_INVERT_LEN
+
+
+    ; --- 4. Write to screen ---
+    mov rdi, rsp                ; arg 1: buffer pointer
+
+    mov rsi, r9
+    sub rsi, rsp                ; arg 2: length = end_ptr - start_ptr (should be TOTAL_SEL_LEN)
+
+    ; Calculates CLI coords by adding panel with buffer coords
+    ; rdx and r10 set by caller
+    add dl, byte [r11 + 2]      ; arg 3: X
+    add r10b, byte [r11 + 3]    ; arg 4: Y
+    call write_to_screen
+
+    leave
+    ret
+
+
 ; =======  Time  ============================================================ ;
 
 SECONDS_IN_MINUTE   equ 60
@@ -461,6 +567,8 @@ write_formatted_sec:
         mov rdx, r14
         mov r10, r13
         call write_str_left_aligned
+
+    add rsp, TIME_FORMAT_LEN
 
     pop r12
     pop r13

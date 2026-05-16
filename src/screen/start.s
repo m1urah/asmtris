@@ -1,31 +1,34 @@
 default rel
 global init_start_screen, process_start_input
-extern draw_panel, write_to_screen      ; utils.s
+global MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE
+extern draw_panel, write_to_screen, write_int_right_aligned, draw_selection     ; utils.s
+extern clear_screen, ANSI_INVERT_LEN
+extern start_level, game_over_off, game_mode, FIRST_LEVEL, LAST_LEVEL           ; game.s
+extern MAX_LEVEL_CHAR_LEN
 
-FIRST_OPTION_NO         equ 1
-LAST_OPTION_NO          equ 4
+FIRST_OPTION            equ 0
+LAST_OPTION             equ 3
 
-; OPTIONS_CLI_START_X     equ 30
-; OPTIONS_CLI_START_Y     equ 12
-; Calculate CLI coords by adding panel with buffer coords
+MODE_CLASSIC            equ 0
+MODE_SPRINT             equ 1
+MODE_ENDLESS            equ 2
+MODE_PRACTICE           equ 3
+
 OPTIONS_PANEL_START_X   equ 20
 OPTIONS_PANEL_START_Y   equ 9
 
+LEVEL_SELECTOR_START_X  equ 39
+LEVEL_SELECTOR_START_Y  equ 13
+
 LINE_SEL_SIZE           equ 21  ; len of '--- CHOOSE A MODE ---'
-ANSI_INVERT_LEN         equ 4   ; Both \e[7m and \e[0m are 4 bytes
-TOTAL_SEL_LEN           equ LINE_SEL_SIZE + (ANSI_INVERT_LEN * 2)
 
 section .rodata
-    ; Enter alternate buffer -> clear screen -> hide cursor
-    clear_seq           db `\x1b[?1049h\x1b[2J\x1b[3J\x1b[H\x1b[?25l`
-    clear_len           equ $-clear_seq
-
     ansi_invert_on      db `\e[7m`
     ansi_invert_off     db `\e[0m`
 
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_select_mode:
-        db 61, 19, 10, 3    ; Width, Height, X, Y
+        db 61, 20, 10, 3    ; Width, Height, X, Y
         db "                                                             ", 0   ; idx = 0
         db "  ██████   ███████ ███    ███ ████████ ███████  ███  ███████ ", 0
         db " ██    ██ ██       ████  ████    ██    ██    ██ ███ ██       ", 0
@@ -41,68 +44,238 @@ section .rodata
         db "                    [ 4 ] Zen / Practice                     ", 0
         db "                                                             ", 0
         db "                                                             ", 0
-        db "                   Select a mode to start                    ", 0
         db "                                                             ", 0
-        db "                   Press q or ESC to exit                    ", 0
-        db "                                                             ", 0  ; idx = 18
-         
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "     [↑/↓] Change Mode  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
+        db "                                                             ", 0   ; idx = 19
 
-    msg_invalid db "    Invalid Level    ", 0
-    panel_level_input:
-        db 25, 5, 27, 11
-        db "┏━━━━━━━━━━━━━━━━━━━━━━━┓", 0
-        db "┃  Enter Level (0-29):  ┃", 0
-        db "┃        [    ]         ┃", 0
-        db "┃  Press ENTER to play  ┃", 0
-        db "┗━━━━━━━━━━━━━━━━━━━━━━━┛", 0
+    panel_classic_mode:
+        db 61, 12, 10, 10
+        db "                    --- CLASSIC MODE ---                     ", 0
+        db "                                                             ", 0
+        db "                     Select Start Level                      ", 0
+        db "                    <      [  0 ]      >                     ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                    [ RETURN ] to go back                    ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "    [←/→] Change Level  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
+
+    panel_sprint_mode:
+        db 61, 12, 10, 10
+        db "                     --- SPRINT MODE ---                     ", 0
+        db "                                                             ", 0
+        db "                        Select Level                         ", 0
+        db "                    <      [  0 ]      >                     ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                    [ RETURN ] to go back                    ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "    [←/→] Change Level  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
+
+    panel_endless_mode:
+        db 61, 12, 10, 10
+        db "                    --- ENDLESS MODE ---                     ", 0
+        db "                                                             ", 0
+        db "                       Ready to drop?                        ", 0
+        db "                        (No limits!)                         ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                    [ RETURN ] to go back                    ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "               [SPACE] Confirm  |  [ESC] Exit                ", 0
+
+    panel_practice_mode:
+        db 61, 12, 10, 10
+        db "                   --- PRACTICE MODE ---                     ", 0
+        db "                                                             ", 0
+        db "                     Disable Game Over?                      ", 0
+        db "                    <      [ NO  ]     >                     ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                    [ RETURN ] to go back                    ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "       [←/→] Toggle  |  [SPACE] Confirm  |  [ESC] Exit       ", 0
+
+    panel_practice_yes:
+        db 61, 1, 10, 13
+        db "                    <      [ YES ]     >                     ", 0
+
+    panel_practice_no:
+        db 61, 1, 10, 13
+        db "                    <      [ NO  ]     >                     ", 0
+
+    panel_selector:
+        dq panel_classic_mode
+        dq panel_sprint_mode
+        dq panel_endless_mode
+        dq panel_practice_mode
+
+    in_mode_selector:
+        dq _process_classic_toggle
+        dq _process_sprint_toggle
+        dq _process_endless_toggle
+        dq _process_practice_toggle
 
 section .data
-    current_selection       db 1    ; Tracks which option is currently active
+    current_selection       db 0    ; Tracks active option (0 = Classic, 1 = Sprint, etc.)
+    in_mode_screen          db 0
 
 section .text
 
 ; =======  Entrypoint  ====================================================== ;
 
-; Setups the screen in the alternate buffer by by cleaning the screen, and
-; displaying the start menu.
+; Resets the current selection and processes input from the user.
 ; Arguments:
 ;   None
 ; Return:
 ;   None
 init_start_screen:
-    ; Enter alternate buffer and clear screen
-    mov rax, 1
-    mov rdi, 1
-    lea rsi, [clear_seq]
-    mov rdx, clear_len
-    syscall
+    call clear_screen
+    mov byte [current_selection], 0
 
-    mov byte [current_selection], 1
-
-    mov rdi, panel_select_mode
-    call draw_panel
-
-    call draw_selection
-
+    call process_selection
     ret
+
+
+; =======  Input Handling  ================================================== ;
 
 ; Process all inputs from the user.
 ; Arguments:
 ;   rdi - Pointer to the input buffer
 ;   rsi - Length of the input
 ; Return:
-;   rax - The mode to load, -1 on quit, or 0 otherwise
+;   rax - 0 to continue processing input, 1 to start game, and -1 to quit
 process_start_input:
+    test rsi, rsi
+    jz .return
+
+    ; Route based on current screen
+    cmp byte [in_mode_screen], 0
+    je .main_screen
+
+    call _process_mode_screen
+    jmp .return
+
+    .main_screen:
+        call _process_main_screen
+
+    .return:
+        ret
+
+; Process main screen input.
+; Arguments:
+;   rdi - Pointer to the input buffer
+;   rsi - Length of the input
+; Return:
+;   rax - -1 to quit, or 0 otherwise
+_process_main_screen:
+    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
+
+    ; Route based on exact bytes read
+    cmp rsi, 1
+    je .handle_1_byte   ; WASD / Space
+    
+    cmp rsi, 3
+    je .handle_3_byte   ; Arrows
+    
+    jmp .done         ; Ignore 2-byte or 4+-byte keystrokes
+
+    .handle_1_byte:
+        ; RSI = 1. We ONLY look at CL
+        cmp cl, 'q'
+        je .do_quit
+        cmp cl, `\e`
+        je .do_quit
+
+        cmp cl, 0x20
+        je .do_select
+        cmp cl, 0x0d    ; Enter works as well
+        je .do_select
+
+        jmp .done
+
+    .handle_3_byte:
+        ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
+        and ecx, 0x00FFFFFF
+        
+        cmp ecx, `\e[A`
+        je .do_up
+        cmp ecx, `\e[B`
+        je .do_down
+
+        jmp .done
+
+    .do_up:
+        cmp byte [current_selection], FIRST_OPTION
+        mov rdx, LAST_OPTION
+        jle .apply_selection
+
+        dec byte [current_selection]
+        call process_selection
+
+        jmp .done
+
+    .do_down:
+        cmp byte [current_selection], LAST_OPTION
+        mov rdx, FIRST_OPTION
+        jge .apply_selection
+
+        inc byte [current_selection]
+        call process_selection
+
+        jmp .done
+
+    .apply_selection:
+        mov byte [current_selection], dl
+        call process_selection
+        jmp .done
+
+    .do_quit:
+        mov rax, -1
+        jmp .return
+
+    .do_select:
+        movzx r8d, byte [current_selection]
+        mov byte [in_mode_screen], 1
+
+        mov rdi, [panel_selector + r8 * 8]
+        call draw_panel
+    
+    .done:
+        mov rax, 0
+
+    .return:
+        ret
+
+; Process mode screen input. Returns the mode to load when the user indicates
+; that is ready to play. 
+; Arguments:
+;   rdi - Pointer to the input buffer
+;   rsi - Length of the input
+; Return:
+;   rax - 0 to continue processing input, 1 to start game, and -1 to quit
+_process_mode_screen:
+    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
+
     push rbp
     mov rbp, rsp
 
     push r15
     mov r15, 0          ; No quit
-
-    test rsi, rsi
-    jz .return
-
-    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
 
     ; Route based on exact bytes read
     cmp rsi, 1
@@ -120,57 +293,25 @@ process_start_input:
         cmp cl, `\e`
         je .do_quit
 
-        cmp cl, 0x0D
-        je .do_enter
-
-        cmp cl, '1'
-        mov rdx, 1
-        je .apply_selection
-        cmp cl, '2'
-        mov rdx, 2
-        je .apply_selection
-        cmp cl, '3'
-        mov rdx, 3
-        je .apply_selection
-        cmp cl, '4'
-        mov rdx, 4
-        je .apply_selection
+        cmp cl, 0x7f
+        je .do_return
+        cmp cl, 0x20
+        je .do_confirm
+        cmp cl, 0x0d    ; Enter works as well
+        je .do_confirm
 
         jmp .return
 
     .handle_3_byte:
         ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
         and ecx, 0x00FFFFFF
-        
-        cmp ecx, `\e[A`
-        je .do_up
-        cmp ecx, `\e[B`
-        je .do_down
 
-        jmp .return
+        movzx rbx, byte [current_selection]
 
-    .apply_selection:
-        mov byte [current_selection], dl
-        call process_selection
-        jmp .return
-
-    .do_up:
-        cmp byte [current_selection], FIRST_OPTION_NO
-        mov rdx, LAST_OPTION_NO
-        jle .apply_selection
-
-        dec byte [current_selection]
-        call process_selection
-
-        jmp .return
-
-    .do_down:
-        cmp byte [current_selection], LAST_OPTION_NO
-        mov rdx, FIRST_OPTION_NO
-        jge .apply_selection
-
-        inc byte [current_selection]
-        call process_selection
+        ; Jump to the correct toggle processing function
+        mov r8, [in_mode_selector + rbx * 8]
+        mov rdi, rcx
+        call r8
 
         jmp .return
 
@@ -178,9 +319,17 @@ process_start_input:
         mov r15, -1
         jmp .return
 
-    .do_enter:
-        movzx r15d, byte [current_selection]
-    
+    .do_return:
+        mov byte [in_mode_screen], 0
+
+        call process_selection
+        jmp .return
+
+    .do_confirm:
+        movzx r8d, byte [current_selection]
+        mov byte [game_mode], r8b
+        mov r15, 1      ; Start game
+
     .return:
         mov rax, r15
 
@@ -188,73 +337,123 @@ process_start_input:
         leave
         ret
 
-; TODO
+
+; =======  Mode Screen Toggle  ============================================== ;
+
+; Process input for the classic mode configuration screen.
+; Arguments:
+;   ecx - Input sequence from the user
+; Return:
+;   None
+_process_classic_toggle:
+    call _level_toggle
+    ret
+
+; Process input for the sprint mode configuration screen.
+; Arguments:
+;   ecx - Input sequence from the user
+; Return:
+;   None
+_process_sprint_toggle:
+    call _level_toggle
+    ret
+
+; Process left and right arrow input to toggle the selected start level.
+; Arguments:
+;   ecx - Input sequence from the user
+; Return:
+;   None
+_level_toggle:
+    cmp ecx, `\e[D`
+    je .do_left
+    cmp ecx, `\e[C`
+    je .do_right
+
+    jmp .return
+
+    .do_left:
+        cmp byte [start_level], FIRST_LEVEL
+        mov rdx, LAST_LEVEL
+        jle .apply_level
+        
+        movzx edx, byte [start_level]
+        dec rdx
+        jmp .apply_level
+
+    .do_right:
+        cmp byte [start_level], LAST_LEVEL
+        mov rdx, FIRST_LEVEL
+        jge .apply_level
+
+        movzx edx, byte [start_level]
+        inc rdx
+
+    .apply_level:
+        mov byte [start_level], dl
+
+        mov rdi, rdx
+        mov rsi, MAX_LEVEL_CHAR_LEN
+        mov rdx, LEVEL_SELECTOR_START_X
+        mov r10, LEVEL_SELECTOR_START_Y
+        call write_int_right_aligned
+
+    .return:
+        ret
+
+; Process input for the practice mode configuration screen.
+; Arguments:
+;   ecx - Input sequence from the user
+; Return:
+;   None
+_process_practice_toggle:
+    cmp ecx, `\e[D`
+    je .toggle_option
+    cmp ecx, `\e[C`
+    je .toggle_option
+
+    jmp .return
+
+    .toggle_option:
+        xor byte [game_over_off], 1
+        
+        mov rdi, panel_practice_no
+        cmp byte [game_over_off], 0
+        je .paint_option
+
+        mov rdi, panel_practice_yes
+
+    .paint_option:
+        call draw_panel
+
+    .return:
+        ret
+
+; Process input for the endless mode configuration screen.
+; Arguments:
+;   ecx - Input sequence from the user
+; Return:
+;   None
+_process_endless_toggle:
+    ret
+
+
+; =======  Selector Drawing  ================================================ ;
+
+; Updates the menu selection by redrawing the panel and highlighting the
+; current choice.
+; Arguments:
+;   None
+; Returns:
+;   None
 process_selection:
     ; Clear the current selection
     mov rdi, panel_select_mode
     call draw_panel
 
+    mov rdi, panel_select_mode
+    mov rsi, LINE_SEL_SIZE
+    mov rdx, OPTIONS_PANEL_START_X
+    movzx r10d, byte [current_selection]
+    add r10, OPTIONS_PANEL_START_Y      ; Target row
     call draw_selection
     ret
-
-; TODO
-draw_selection:
-    push rbp
-    mov rbp, rsp
-
-    sub rsp, TOTAL_SEL_LEN
-
-    lea r8, [panel_select_mode + 4]     ; src ptr
-    mov r9, rsp                         ; dst ptr
-
-    mov eax, dword [ansi_invert_on]
-    mov dword [r9], eax
-
-    add r9, ANSI_INVERT_LEN
-
-    movzx r10d, byte [current_selection]
-    dec r10                                 ; Mode starts at 1, offset at 0
-    add r10, OPTIONS_PANEL_START_Y          ; Target row
-    mov r11, r10
-    
-    ; We are using multi-byte utf-8 chars, we need a loop
-    .find_start_of_selection:
-        .traverse_row:
-            inc r8
-            cmp byte [r8], 0
-            jnz .traverse_row
-
-        dec r10
-        jnz .find_start_of_selection
-
-    inc r8                          ; At selection's row
-    add r8, OPTIONS_PANEL_START_X
-    
-    mov rsi, r8
-    mov rdi, r9
-    mov rcx, LINE_SEL_SIZE
-    rep movsb                       ; rdi now points to the end of the copied string
-
-    mov r9, rdi
-
-    mov eax, dword [ansi_invert_off]
-    mov dword [r9], eax
-    
-    add r9, ANSI_INVERT_LEN
-
-    mov rdi, rsp                    ; arg 1: buffer pointer
-
-    mov rsi, r9
-    sub rsi, rsp                    ; arg 2: length = end_ptr - start_ptr (should be TOTAL_SEL_LEN)
-
-    mov rdx, OPTIONS_PANEL_START_X  ; arg 3: X
-    add dl, byte [panel_select_mode + 2]
-    mov r10, r11                    ; arg 3: Y
-    add r10b, byte [panel_select_mode + 3]
-    call write_to_screen
-
-    leave
-    ret
-
-
-; LAST THING, TERMINAL IS STUCK ON THE SELECTION
