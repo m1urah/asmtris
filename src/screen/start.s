@@ -118,7 +118,10 @@ section .rodata
 
 section .data
     current_selection       db 0    ; Tracks active option (0 = Classic, 1 = Sprint, etc.)
+
     in_mode_screen          db 0
+    in_mode_start_level     db 0
+    in_mode_game_over_off   db 0
 
 section .text
 
@@ -132,10 +135,10 @@ section .text
 init_start_screen:
     call clear_screen
     mov byte [current_selection], 0
-    mov byte [in_mode_screen], 0
 
-    mov byte [start_level], 0
-    mov byte [game_over_off], 0
+    mov byte [in_mode_screen], 0
+    mov byte [in_mode_start_level], 0
+    mov byte [in_mode_game_over_off], 0
 
     call process_selection
     ret
@@ -238,7 +241,10 @@ _process_main_screen:
 
     .do_select:
         movzx r8d, byte [current_selection]
+
         mov byte [in_mode_screen], 1
+        mov byte [in_mode_start_level], 0
+        mov byte [in_mode_game_over_off], 0
 
         mov rdi, [panel_selector + r8 * 8]
         call draw_panel
@@ -316,8 +322,13 @@ _process_mode_screen:
         jmp .return
 
     .do_confirm:
-        movzx r8d, byte [current_selection]
+        mov r8b, byte [current_selection]
         mov byte [game_mode], r8b
+        mov r8b, byte [in_mode_start_level]
+        mov byte [start_level], r8b
+        mov r8b, byte [in_mode_game_over_off]
+        mov byte [game_over_off], r8b
+
         mov r15, 1      ; Start game
 
     .return:
@@ -364,24 +375,24 @@ _level_toggle:
     jmp .return
 
     .do_left:
-        cmp byte [start_level], FIRST_LEVEL
+        cmp byte [in_mode_start_level], FIRST_LEVEL
         mov rdx, MAX_SELECTABLE_LEVEL
         jle .apply_level
         
-        movzx edx, byte [start_level]
+        movzx edx, byte [in_mode_start_level]
         dec rdx
         jmp .apply_level
 
     .do_right:
-        cmp byte [start_level], MAX_SELECTABLE_LEVEL
+        cmp byte [in_mode_start_level], MAX_SELECTABLE_LEVEL
         mov rdx, FIRST_LEVEL
         jge .apply_level
 
-        movzx edx, byte [start_level]
+        movzx edx, byte [in_mode_start_level]
         inc rdx
 
     .apply_level:
-        mov byte [start_level], dl
+        mov byte [in_mode_start_level], dl
 
         mov rdi, rdx
         mov rsi, MAX_LEVEL_CHAR_LEN
@@ -415,10 +426,10 @@ _process_practice:
         jmp .return
 
     .toggle_game_over:
-        xor byte [game_over_off], 1
+        xor byte [in_mode_game_over_off], 1
         
         mov rdi, panel_practice_no
-        cmp byte [game_over_off], 0
+        cmp byte [in_mode_game_over_off], 0
         je .paint_option
 
         mov rdi, panel_practice_yes

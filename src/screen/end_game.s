@@ -66,7 +66,7 @@ section .rodata
         db "              ██ ██    ██████   ██   ████  ██ ██             ", 0
         db "                                                             ", 0
         db "            congratulations you are a really smart           ", 0
-        db "               individual. Now, got to my blog:              ", 0
+        db "                individual. Now, go to my blog:              ", 0
         db "                    allthingsmalware.com                     ", 0
         db "                                                             ", 0
         db "                    [ 1 ] Play Again                         ", 0   ; idx = 17
@@ -104,8 +104,8 @@ section .rodata
     panel_stats_practice:
         db 61, 3, 10, 16
         db "                    Score:        XXXX                       ", 0
-        db "                    Lines:          XX                       ", 0
-        db "                    Speed:         XXX                       ", 0
+        db "                    Level:          XX                       ", 0
+        db "                    Lines:         XXX                       ", 0
 
     mode_selector:
         dq _process_classic
@@ -139,6 +139,13 @@ init_end_game_screen:
 
     mov r14, panel_game_over
 
+    .draw_panel:
+        mov rdi, r14 
+        call draw_panel
+
+        cmp r15, GAME_WIN_RET
+        je .continue
+
     .draw_stats:
         movzx r8d, byte [game_mode]
         mov r9, [mode_selector + r8 * 8]
@@ -149,10 +156,6 @@ init_end_game_screen:
         add rsi, STATS_BUFFER_POS_Y             ; Terminal's starting Y
         
         call r9
-
-    .draw_panel:
-        mov rdi, r14 
-        call draw_panel
 
     .continue:
         call process_selection
@@ -408,35 +411,5 @@ _process_endless:
 ; Return:
 ;   None
 _process_practice:
-    push r15
-    push r14
-
-    mov r15, rdi
-    mov r14, rsi
-
-    mov rdi, panel_stats_practice
-    call draw_panel
-
-    mov edi, [score]
-    mov rsi, STATS_MAX_LEN
-    mov rdx, r15
-    mov r10, r14
-    call write_int_right_aligned
-
-    mov edi, [lines]
-    mov rsi, STATS_MAX_LEN
-    mov rdx, r15
-    mov r10, r14
-    inc r10
-    call write_int_right_aligned
-
-    movzx edi, byte [speed]
-    mov rsi, STATS_MAX_LEN
-    mov rdx, r15
-    mov r10, r14
-    add r10, 2
-    call write_int_right_aligned
-
-    pop r14
-    pop r15
+    call _process_classic   ; Same stats
     ret

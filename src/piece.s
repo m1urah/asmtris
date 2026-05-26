@@ -219,7 +219,6 @@ move_piece:
     test r13, r13
     jz .draw_piece
 
-    ; If success, apply movement offsets. sx needed, coordinates might be negative!!!
     add byte [active_piece + 2], r15b   ; X
     add byte [active_piece + 3], r14b   ; Y
 
@@ -290,6 +289,7 @@ _can_move_piece:
     mov r15, rdi
     mov r14, rsi
 
+    ; Apply movement offsets. sx needed, coordinates might be negative!!!
     movsx r8, byte [active_piece + 2]
     add r15, r8                         ; target_x = dx + x
     movsx r9, byte [active_piece + 3]
