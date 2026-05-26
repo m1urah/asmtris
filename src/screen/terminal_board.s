@@ -1,6 +1,6 @@
 default rel
 global init_board_screen, update_screen, panel_main
-extern MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE                   ; screen/start.s
+extern MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE                   ; common.s
 extern draw_panel, write_to_screen, itoa, render_buffer_colored                 ; utils.s
 extern write_to_screen, write_int_right_aligned, write_str_left_aligned     
 extern write_formatted_sec, clear_screen
@@ -42,11 +42,10 @@ section .rodata
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
     panel_stats_sprint:
-        db 20, 6, 1, 8
+        db 20, 5, 1, 8
         db "┏━━━━━━━Stats━━━━━━┓", 0
         db "┃ Time       XX:XX ┃", 0
         db "┃ Level          X ┃", 0
-        db "┃ Lines          X ┃", 0
         db "┃ Lines Left     X ┃", 0
         db "┗━━━━━━━━━━━━━━━━━━┛", 0
 
@@ -303,12 +302,8 @@ update_stats:
         mov rsi, 1
         call _set_int_stat
 
-        mov edi, dword [lines]
-        mov rsi, 2
-        call _set_int_stat
-
         movzx edi, byte [lines_left]
-        mov rsi, 3
+        mov rsi, 2
         call _set_int_stat
 
         jmp .return

@@ -1,18 +1,13 @@
 default rel
 global init_start_screen, process_start_input
-global MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE
+extern MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE, FIRST_LEVEL      ; common.s
+extern MAX_SELECTABLE_LEVEL, MAX_LEVEL_CHAR_LEN
 extern draw_panel, write_to_screen, write_int_right_aligned, draw_selection     ; utils.s
 extern clear_screen, ANSI_INVERT_LEN
-extern start_level, game_over_off, game_mode, FIRST_LEVEL, LAST_LEVEL           ; game.s
-extern MAX_LEVEL_CHAR_LEN
+extern start_level, game_over_off, game_mode                                    ; game.s
 
 FIRST_OPTION            equ 0
 LAST_OPTION             equ 3
-
-MODE_CLASSIC            equ 0
-MODE_SPRINT             equ 1
-MODE_ENDLESS            equ 2
-MODE_PRACTICE           equ 3
 
 OPTIONS_PANEL_START_X   equ 20
 OPTIONS_PANEL_START_Y   equ 9
@@ -28,7 +23,7 @@ section .rodata
 
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_select_mode:
-        db 61, 20, 10, 3    ; Width, Height, X, Y
+        db 61, 18, 10, 3    ; Width, Height, X, Y
         db "                                                             ", 0   ; idx = 0
         db "  ██████   ███████ ███    ███ ████████ ███████  ███  ███████ ", 0
         db " ██    ██ ██       ████  ████    ██    ██    ██ ███ ██       ", 0
@@ -44,21 +39,17 @@ section .rodata
         db "                    [ 4 ] Zen / Practice                     ", 0
         db "                                                             ", 0
         db "                                                             ", 0
-        db "                                                             ", 0
-        db "                                                             ", 0
         db " =========================================================== ", 0
         db "     [↑/↓] Change Mode  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
         db "                                                             ", 0   ; idx = 19
 
     panel_classic_mode:
-        db 61, 12, 10, 10
+        db 61, 10, 10, 10
         db "                    --- CLASSIC MODE ---                     ", 0
         db "                                                             ", 0
         db "                     Select Start Level                      ", 0
         db "                    <      [  0 ]      >                     ", 0
         db "                                                             ", 0
-        db "                                                             ", 0
-        db "                    [ RETURN ] to go back                    ", 0
         db "                                                             ", 0
         db "                                                             ", 0
         db "                                                             ", 0
@@ -66,14 +57,12 @@ section .rodata
         db "    [←/→] Change Level  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
 
     panel_sprint_mode:
-        db 61, 12, 10, 10
-        db "                     --- SPRINT MODE ---                     ", 0
+        db 61, 10, 10, 10
+        db "                    --- SPRINT MODE ---                      ", 0
         db "                                                             ", 0
         db "                        Select Level                         ", 0
         db "                    <      [  0 ]      >                     ", 0
         db "                                                             ", 0
-        db "                                                             ", 0
-        db "                    [ RETURN ] to go back                    ", 0
         db "                                                             ", 0
         db "                                                             ", 0
         db "                                                             ", 0
@@ -81,14 +70,12 @@ section .rodata
         db "    [←/→] Change Level  |  [SPACE] Confirm  |  [ESC] Exit    ", 0
 
     panel_endless_mode:
-        db 61, 12, 10, 10
+        db 61, 10, 10, 10
         db "                    --- ENDLESS MODE ---                     ", 0
         db "                                                             ", 0
         db "                       Ready to drop?                        ", 0
         db "                        (No limits!)                         ", 0
         db "                                                             ", 0
-        db "                                                             ", 0
-        db "                    [ RETURN ] to go back                    ", 0
         db "                                                             ", 0
         db "                                                             ", 0
         db "                                                             ", 0
@@ -96,27 +83,25 @@ section .rodata
         db "               [SPACE] Confirm  |  [ESC] Exit                ", 0
 
     panel_practice_mode:
-        db 61, 12, 10, 10
-        db "                   --- PRACTICE MODE ---                     ", 0
+        db 61, 10, 10, 10
+        db "                    --- PRACTICE MODE ---                    ", 0
         db "                                                             ", 0
-        db "                     Disable Game Over?                      ", 0
-        db "                    <      [ NO  ]     >                     ", 0
-        db "                                                             ", 0
-        db "                                                             ", 0
-        db "                    [ RETURN ] to go back                    ", 0
+        db "                     Select Start Level                      ", 0
+        db "                    <      [  0 ]      >                     ", 0
         db "                                                             ", 0
         db "                                                             ", 0
+        db "                    [ ] Disable Game Over                    ", 0
         db "                                                             ", 0
         db " =========================================================== ", 0
-        db "       [←/→] Toggle  |  [SPACE] Confirm  |  [ESC] Exit       ", 0
+        db "     [←/→/ENTER] Options | [SPACE] Confirm | [ESC] Exit      ", 0
 
     panel_practice_yes:
-        db 61, 1, 10, 13
-        db "                    <      [ YES ]     >                     ", 0
+        db 61, 1, 10, 16
+        db "                    [X] Disable Game Over                    ", 0
 
     panel_practice_no:
-        db 61, 1, 10, 13
-        db "                    <      [ NO  ]     >                     ", 0
+        db 61, 1, 10, 16
+        db "                    [ ] Disable Game Over                    ", 0
 
     panel_selector:
         dq panel_classic_mode
@@ -124,11 +109,12 @@ section .rodata
         dq panel_endless_mode
         dq panel_practice_mode
 
-    in_mode_selector:
-        dq _process_classic_toggle
-        dq _process_sprint_toggle
-        dq _process_endless_toggle
-        dq _process_practice_toggle
+    ; When on the 2nd screen
+    mode_selector:
+        dq _process_classic
+        dq _process_sprint
+        dq _process_endless
+        dq _process_practice
 
 section .data
     current_selection       db 0    ; Tracks active option (0 = Classic, 1 = Sprint, etc.)
@@ -146,6 +132,10 @@ section .text
 init_start_screen:
     call clear_screen
     mov byte [current_selection], 0
+    mov byte [in_mode_screen], 0
+
+    mov byte [start_level], 0
+    mov byte [game_over_off], 0
 
     call process_selection
     ret
@@ -192,7 +182,7 @@ _process_main_screen:
     cmp rsi, 3
     je .handle_3_byte   ; Arrows
     
-    jmp .done         ; Ignore 2-byte or 4+-byte keystrokes
+    jmp .done           ; Ignore 2-byte or 4+-byte keystrokes
 
     .handle_1_byte:
         ; RSI = 1. We ONLY look at CL
@@ -202,8 +192,6 @@ _process_main_screen:
         je .do_quit
 
         cmp cl, 0x20
-        je .do_select
-        cmp cl, 0x0d    ; Enter works as well
         je .do_select
 
         jmp .done
@@ -297,8 +285,9 @@ _process_mode_screen:
         je .do_return
         cmp cl, 0x20
         je .do_confirm
-        cmp cl, 0x0d    ; Enter works as well
-        je .do_confirm
+
+        cmp cl, 0x0d
+        je .call_processing_function
 
         jmp .return
 
@@ -306,10 +295,11 @@ _process_mode_screen:
         ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
         and ecx, 0x00FFFFFF
 
+    .call_processing_function:
         movzx rbx, byte [current_selection]
 
         ; Jump to the correct toggle processing function
-        mov r8, [in_mode_selector + rbx * 8]
+        mov r8, [mode_selector + rbx * 8]
         mov rdi, rcx
         call r8
 
@@ -342,28 +332,30 @@ _process_mode_screen:
 
 ; Process input for the classic mode configuration screen.
 ; Arguments:
-;   ecx - Input sequence from the user
+;   rdi - Input sequence from the user
 ; Return:
 ;   None
-_process_classic_toggle:
+_process_classic:
     call _level_toggle
     ret
 
 ; Process input for the sprint mode configuration screen.
 ; Arguments:
-;   ecx - Input sequence from the user
+;   rdi - Input sequence from the user
 ; Return:
 ;   None
-_process_sprint_toggle:
+_process_sprint:
     call _level_toggle
     ret
 
 ; Process left and right arrow input to toggle the selected start level.
 ; Arguments:
-;   ecx - Input sequence from the user
+;   rdi - Input sequence from the user
 ; Return:
 ;   None
 _level_toggle:
+    mov rcx, rdi
+
     cmp ecx, `\e[D`
     je .do_left
     cmp ecx, `\e[C`
@@ -373,7 +365,7 @@ _level_toggle:
 
     .do_left:
         cmp byte [start_level], FIRST_LEVEL
-        mov rdx, LAST_LEVEL
+        mov rdx, MAX_SELECTABLE_LEVEL
         jle .apply_level
         
         movzx edx, byte [start_level]
@@ -381,7 +373,7 @@ _level_toggle:
         jmp .apply_level
 
     .do_right:
-        cmp byte [start_level], LAST_LEVEL
+        cmp byte [start_level], MAX_SELECTABLE_LEVEL
         mov rdx, FIRST_LEVEL
         jge .apply_level
 
@@ -402,18 +394,27 @@ _level_toggle:
 
 ; Process input for the practice mode configuration screen.
 ; Arguments:
-;   ecx - Input sequence from the user
+;   rdi - Input sequence from the user
 ; Return:
 ;   None
-_process_practice_toggle:
+_process_practice:
+    mov rcx, rdi
+
     cmp ecx, `\e[D`
-    je .toggle_option
+    je .toggle_level
     cmp ecx, `\e[C`
-    je .toggle_option
+    je .toggle_level
+
+    cmp cl, 0x0d    ; Enter
+    je .toggle_game_over
 
     jmp .return
 
-    .toggle_option:
+    .toggle_level:
+        call _level_toggle
+        jmp .return
+
+    .toggle_game_over:
         xor byte [game_over_off], 1
         
         mov rdi, panel_practice_no
@@ -430,10 +431,10 @@ _process_practice_toggle:
 
 ; Process input for the endless mode configuration screen.
 ; Arguments:
-;   ecx - Input sequence from the user
+;   rdi - Input sequence from the user
 ; Return:
 ;   None
-_process_endless_toggle:
+_process_endless:
     ret
 
 
@@ -454,6 +455,7 @@ process_selection:
     mov rsi, LINE_SEL_SIZE
     mov rdx, OPTIONS_PANEL_START_X
     movzx r10d, byte [current_selection]
-    add r10, OPTIONS_PANEL_START_Y      ; Target row
+    add r10, OPTIONS_PANEL_START_Y  ; Target row
     call draw_selection
+
     ret

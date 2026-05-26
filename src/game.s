@@ -1,27 +1,40 @@
 default rel
-global init_board, process_board_input, gravity_tick, verify_game_over, frames_until_drop
+global init_board, process_board_input, gravity_tick, verify_end_of_game, frames_until_drop
 global game_board, needs_next_piece_redraw, is_paused, game_mode, game_over_off
 global score, lines, start_level, current_level, next_level, speed, lines_left, elapsed_seconds
-global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS, FIRST_LEVEL
-global LAST_LEVEL, MAX_LEVEL_CHAR_LEN
-extern spawn_piece, choose_next_piece, move_piece, rotate_figure, lock_delay_active     ; piece.s
-extern lock_delay, lock_resets, calculate_hard_drop, do_hard_drop, active_piece
-extern next_piece, LOCK_DELAY_VALUE, PIECE_STRUCT_MAX_SIZE
+global GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS, GAME_OVER_RET, GAME_WIN_RET
+extern MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE, LAST_LEVEL   ; common.s     
+extern spawn_piece, choose_next_piece, move_piece, rotate_figure            ; piece.s
+extern lock_delay_active, lock_delay, lock_resets, calculate_hard_drop
+extern do_hard_drop, active_piece, init_piece, LOCK_DELAY_VALUE
+extern PIECE_STRUCT_MAX_SIZE
 
 NUMBER_OF_HIDDEN_ROWS   equ 4
 GAME_BOARD_WIDTH        equ 13
 GAME_BOARD_HEIGHT       equ 25      ; 4 first lines = hidden (spawn) zone
 GAME_BOARD_SIZE         equ GAME_BOARD_WIDTH * GAME_BOARD_HEIGHT
 
-FIRST_LEVEL             equ 0
-LAST_LEVEL              equ 29
-MAX_LEVEL_CHAR_LEN      equ 2
+SPRINT_LINES_LEFT       equ 20
+FRAMES_PER_SECOND       equ 60
+
+GAME_OVER_RET           equ 1
+GAME_WIN_RET            equ 2
 
 section .rodata
     level_speeds:   ; Lvl 0, 1, 2 ... 29+
         db 48, 43, 38, 33, 28, 23, 18, 13, 8, 6
         db 5, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2
         db 2, 2, 2, 2, 2, 2, 2, 1
+
+    level_transition_lines:   ; Lvl 0, 1, 2 ... 19
+        db 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
+        db 100, 100, 100, 100, 100, 100, 110, 120, 130, 140
+
+    game_mode_selector:
+        dq process_classic
+        dq process_sprint
+        dq process_endless
+        dq process_practice
 
 section .data
     ; Logical game board. Possible values:
@@ -31,25 +44,39 @@ section .data
     ;       oo        ss    zz  lll  jjj  ttt
     game_board              times GAME_BOARD_SIZE db 0x20
 
-    ; Stats
+    ; --- Stats ---
+    ; Common
     score                   dd 0
     lines                   dd 0
-    start_level             db 0
+    start_level             db 0    ; Allow restart game mode after end screen
     current_level           db 0
-    next_level              db 0
     speed                   db 0
-    lines_left              db 40
+    won                     db 0
+
+    ; Classic
+    transition_lines        db 0
+    next_level              db 0
+
+    ; Sprint
+    frames_until_next_sec   db 0
     elapsed_seconds         dw 0
+    last_cleared_lines      db 0
+    lines_left              db 0
+
+    ; Endless
+    ; Nothing
+
+    ; Practice
+    game_over_off           db 0    ; 1 = no game over
 
     game_mode               db 0
     needs_next_piece_redraw db 0
     is_paused               db 0
-    game_over_off           db 0    ; 1 = no game over
     frames_until_drop       db 0
 
 section .text
 
-; =======  Entrypoint  ====================================================== ;
+; =======  Initialization  ================================================== ;
 
 ; Sets the initial state of the board.
 ; Arguments:
@@ -57,46 +84,49 @@ section .text
 ; Return:
 ;   None
 init_board:
-    ; Set initial state
+    ; --- Board and Piece ---
     mov rax, 0x20
-
     lea rdi, [game_board]
     mov rcx, GAME_BOARD_SIZE
     rep stosb
-    
-    lea rdi, [active_piece]
-    mov rcx, PIECE_STRUCT_MAX_SIZE
-    rep stosb
 
-    lea rdi, [next_piece]
-    mov rcx, PIECE_STRUCT_MAX_SIZE
-    rep stosb
+    call init_piece
 
+    ; --- Common Stats ---
     mov dword [score], 0
     mov dword [lines], 0
     movzx r8d, byte [start_level]
     mov byte [current_level], r8b
+    mov r9b, [level_speeds + r8]
+    mov byte [speed], r9b
+    mov byte [won], 0
 
+    ; --- Classic ---
+    mov r9b, [level_transition_lines + r8]
+    mov byte [transition_lines], r9b
     inc r8
     mov byte [next_level], r8b
 
-    movzx eax, byte [current_level]
-    mov r8b, [level_speeds + rax]       ; Current current_level speed
-    mov byte [speed], r8b
+    ; --- Sprint ---
+    mov dword [elapsed_seconds], 0
+    mov byte [frames_until_next_sec], FRAMES_PER_SECOND
+    mov byte [last_cleared_lines], 0
+    mov byte [lines_left], SPRINT_LINES_LEFT
 
+    ; Nothing to update for Endless or Practice
+
+    ; --- Other stuff ---
     mov byte [needs_next_piece_redraw], 1
     mov byte [is_paused], 0
-    mov byte [frames_until_drop], 1     ; 1 so it doesn't go to -1 on gravity_tic (dec goes first)
-
-    ; From transforms.s
-    mov byte [lock_delay], 0
-    mov byte [lock_delay_active], 0
-    mov byte [lock_resets], 0
+    mov byte [frames_until_drop], 1     ; 1 so it doesn't go to -1 on gravity_tick (dec goes first)
 
     call choose_next_piece
     call spawn_piece
 
     ret
+
+
+; =======  Game Entrypoint  ================================================= ;
 
 ; Process all inputs from the user except for quit.
 ; Arguments:
@@ -270,6 +300,8 @@ gravity_tick:
     call spawn_piece
     call clear_full_rows
 
+    mov byte [last_cleared_lines], al
+
     mov rdi, rax
     call update_score_lines       ; No-op if rdi = 0
 
@@ -278,7 +310,7 @@ gravity_tick:
 
     .continue:
         dec byte [frames_until_drop]
-        jnz .return
+        jnz .process_game_mode
 
         mov r8b, [speed]
         mov byte [frames_until_drop], r8b   ; Reset timer
@@ -287,6 +319,75 @@ gravity_tick:
         mov rsi, 1
         call move_piece     ; Move 1 down (0, 1)
 
+    .process_game_mode:
+        movzx r8d, byte [game_mode]
+        mov r8, [game_mode_selector + r8 * 8]
+        call r8
+
+    .return:
+        ret
+
+
+; =======  Game Mode Processing  ============================================ ;
+
+process_classic:
+    mov r8d, dword [lines]
+    cmp r8b, byte [transition_lines]
+    jb .return
+
+    cmp byte [current_level], LAST_LEVEL
+    je .set_won
+
+    inc byte [current_level]
+    inc byte [next_level]
+    add byte [transition_lines], 10
+    jmp .return
+    
+    .set_won:
+        mov byte [won], 1   ; Last level cleared, end of game
+
+    .return:
+        ret
+
+process_sprint:
+    movzx eax, byte [last_cleared_lines]
+    sub byte [lines_left], al
+    jg .next_second
+
+    mov byte [won], 1
+    jmp .return
+
+    .next_second:
+        dec byte [frames_until_next_sec]
+        jnz .return
+
+        mov byte [frames_until_next_sec], FRAMES_PER_SECOND
+        inc dword [elapsed_seconds]
+
+    .return:
+        mov byte [last_cleared_lines], 0
+        ret
+
+process_endless:
+    ret
+
+process_practice:
+    call _is_game_over
+    cmp rax, 0
+    je .return
+
+    cmp byte [game_over_off], 0
+    je .return
+
+    ; Clear screen to reset game over
+    mov rax, 0x20
+    lea rdi, [game_board]
+    mov rcx, GAME_BOARD_SIZE
+    rep stosb
+
+    ; Current piece was also cleared
+    call spawn_piece
+    
     .return:
         ret
 
@@ -474,13 +575,29 @@ update_score:
 
 ; =======  Other  =========================================================== ;
 
+; Checks if the current game has reached an end state, either by achieving the
+; current game mode's win condition or by triggering a game over.
+; Arguments:
+;   None
+; Return:
+;   rax - 0 if the game continues, 1 if game over, 2 if won
+verify_end_of_game:
+    mov rax, 2
+
+    cmp byte [won], 1
+    je .return
+
+    call _is_game_over
+    .return:
+        ret
+
 ; Checks if any part of a piece is located within the hidden zone. Must be
 ; called BEFORE a spawning a new piece.
 ; Arguments:
 ;   None
 ; Return:
-;   rax - 1 if Game Over, 0 if games continue
-verify_game_over:
+;   rax - 1 if game over, 0 if games continue
+_is_game_over:
     mov rax, 0
 
     cmp byte [lock_delay_active], 1

@@ -1,0 +1,14 @@
+default rel
+
+global MODE_CLASSIC, MODE_SPRINT, MODE_ENDLESS, MODE_PRACTICE
+global FIRST_LEVEL, LAST_LEVEL, MAX_SELECTABLE_LEVEL, MAX_LEVEL_CHAR_LEN
+
+MODE_CLASSIC            equ 0
+MODE_SPRINT             equ 1
+MODE_ENDLESS            equ 2
+MODE_PRACTICE           equ 3
+
+FIRST_LEVEL             equ 0
+LAST_LEVEL              equ 29
+MAX_SELECTABLE_LEVEL    equ 19
+MAX_LEVEL_CHAR_LEN      equ 2

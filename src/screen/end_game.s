@@ -1,13 +1,10 @@
 default rel
-global init_game_over_screen, process_game_over_input
+global init_end_game_screen, process_end_game_input
 extern draw_panel, write_int_right_aligned, clear_screen, draw_selection    ; utils.s
 extern write_formatted_sec
 extern score, lines, current_level, speed, elapsed_seconds, game_mode       ; game.s
+extern GAME_OVER_RET, GAME_WIN_RET
 extern panel_main                                                           ; terminal_board.s
-
-GAME_OVER_POS_X         equ 43
-GAME_OVER_POS_Y         equ 10
-GAME_OVER_VALUE_LEN     equ 6
 
 OPTIONS_PANEL_START_X   equ 20
 
@@ -27,7 +24,7 @@ STATS_MAX_LEN           equ 6
 section .rodata
     ; Cursor positioning ANSI escape codes starts with (1,1) not (0,0) 
     panel_game_over:
-        db 61, 24, 10, 3    ; Width, Height, X, Y
+        db 61, 24, 10, 3    ; Width, Height, X, Y 
         db "                                                             ", 0   ; idx = 0
         db "             ██████   █████  ███    ███ ███████              ", 0
         db "            ██       ██   ██ ████  ████ ██                   ", 0
@@ -45,7 +42,34 @@ section .rodata
         db "                    Stat 2:         XX                       ", 0
         db "                    Stat 3:        XXX                       ", 0
         db "                                                             ", 0
-        db "                    [ 1 ] Restart Mode                       ", 0   ; idx = 17
+        db "                    [ 1 ] Play Again                         ", 0   ; idx = 17
+        db "                    [ 2 ] Start Menu                         ", 0
+        db "                    [ 3 ] Exit Game                          ", 0
+        db "                                                             ", 0
+        db " =========================================================== ", 0
+        db "    [↑/↓] Select Option  |  [SPACE] Confirm  |  [ESC] Exit   ", 0
+        db "                                                             ", 0   ; idx = 23
+
+    panel_victory:
+        db 61, 24, 10, 3
+        db "                                                             ", 0   ; idx = 0
+        db "                 ██    ██   ██████   ██    ██                ", 0
+        db "                  ██  ██   ██    ██  ██    ██                ", 0
+        db "                   ████    ██    ██  ██    ██                ", 0
+        db "                    ██     ██    ██  ██    ██                ", 0
+        db "                    ██      ██████    ██████                 ", 0
+        db "                                                             ", 0
+        db "             ██   ██   ██████   ███    ██  ██ ██             ", 0
+        db "             ██   ██  ██    ██  ████   ██  ██ ██             ", 0
+        db "             ██ █ ██  ██    ██  ██ ██  ██  ██ ██             ", 0
+        db "             ███████  ██    ██  ██  ██ ██                    ", 0
+        db "              ██ ██    ██████   ██   ████  ██ ██             ", 0
+        db "                                                             ", 0
+        db "            congratulations you are a really smart           ", 0
+        db "               individual. Now, got to my blog:              ", 0
+        db "                    allthingsmalware.com                     ", 0
+        db "                                                             ", 0
+        db "                    [ 1 ] Play Again                         ", 0   ; idx = 17
         db "                    [ 2 ] Start Menu                         ", 0
         db "                    [ 3 ] Exit Game                          ", 0
         db "                                                             ", 0
@@ -55,7 +79,7 @@ section .rodata
 
     panel_options:
         db 61, 3, 10, 20
-        db "                    [ 1 ] Restart Mode                       ", 0
+        db "                    [ 1 ] Play Again                         ", 0
         db "                    [ 2 ] Start Menu                         ", 0
         db "                    [ 3 ] Exit Game                          ", 0
 
@@ -83,7 +107,7 @@ section .rodata
         db "                    Lines:          XX                       ", 0
         db "                    Speed:         XXX                       ", 0
 
-    option_selector:
+    mode_selector:
         dq _process_classic
         dq _process_sprint
         dq _process_endless
@@ -98,28 +122,162 @@ section .text
 
 ; Resets the current selection and processes input from the user.
 ; Arguments:
-;   None
+;   rdi - Wether the hit game over (1) or won (2)
 ; Return:
 ;   None
-init_game_over_screen:
+init_end_game_screen:
+    push r15
+    push r14
+    mov r15, rdi
+
     call clear_screen
     mov byte [current_selection], 0
 
-    mov rdi, panel_game_over
+    mov r14, panel_victory
+    cmp r15, GAME_WIN_RET
+    je .draw_panel
+
+    mov r14, panel_game_over
+
+    .draw_stats:
+        movzx r8d, byte [game_mode]
+        mov r9, [mode_selector + r8 * 8]
+
+        movzx edi, byte [panel_game_over + 2]   ; Buffer's starting X
+        movzx esi, byte [panel_game_over + 3]   ; Buffer's starting Y
+        add rdi, STATS_BUFFER_POS_X             ; Terminal's starting X
+        add rsi, STATS_BUFFER_POS_Y             ; Terminal's starting Y
+        
+        call r9
+
+    .draw_panel:
+        mov rdi, r14 
+        call draw_panel
+
+    .continue:
+        call process_selection
+
+        pop r14
+        pop r15
+        ret
+
+
+; =======  Input Handling  ================================================== ;
+
+; Process all inputs from the user.
+; Arguments:
+;   rdi - Pointer to the input buffer
+;   rsi - Length of the input
+; Return:
+;   rax - 0 to continue processing input, 1 to restart game, 2 to return to the
+;         start menu, and -1 to quit
+process_end_game_input:
+    test rsi, rsi
+    jz .return
+
+    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
+
+    ; Route based on exact bytes read
+    cmp rsi, 1
+    je .handle_1_byte   ; WASD / Space
+    
+    cmp rsi, 3
+    je .handle_3_byte   ; Arrows
+    
+    jmp .done         ; Ignore 2-byte or 4+-byte keystrokes
+
+    .handle_1_byte:
+        ; RSI = 1. We ONLY look at CL
+        cmp cl, 'q'
+        je .do_quit
+        cmp cl, `\e`
+        je .do_quit
+
+        cmp cl, 0x20
+        je .do_select
+        cmp cl, 0x0d    ; Enter works as well
+        je .do_select
+
+        jmp .done
+
+    .handle_3_byte:
+        ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
+        and ecx, 0x00FFFFFF
+        
+        cmp ecx, `\e[A`
+        je .do_up
+        cmp ecx, `\e[B`
+        je .do_down
+
+        jmp .done
+
+    .do_up:
+        cmp byte [current_selection], FIRST_OPTION
+        mov rdx, LAST_OPTION
+        jle .apply_selection
+
+        dec byte [current_selection]
+        call process_selection
+
+        jmp .done
+
+    .do_down:
+        cmp byte [current_selection], LAST_OPTION
+        mov rdx, FIRST_OPTION
+        jge .apply_selection
+
+        inc byte [current_selection]
+        call process_selection
+
+        jmp .done
+
+    .apply_selection:
+        mov byte [current_selection], dl
+        call process_selection
+        jmp .done
+
+    .do_select:
+        mov rax, 1
+        cmp byte [current_selection], OPTION_RESTART
+        je .return
+
+        mov rax, 2
+        cmp byte [current_selection], OPTION_START
+        je .return
+
+        ; OPTION_QUIT
+
+    .do_quit:
+        mov rax, -1
+        jmp .return
+
+    .done:
+        mov rax, 0
+
+    .return:
+        ret
+
+
+; =======  Selector Drawing  ================================================ ;
+
+; Updates the menu selection by redrawing the panel and highlighting the
+; current choice.
+; Arguments:
+;   None
+; Returns:
+;   None
+process_selection:
+    ; Clear the current selection
+    mov rdi, panel_options
     call draw_panel
 
-    movzx r8d, byte [game_mode]
-    mov r9, [option_selector + r8 * 8]
-
-    movzx edi, byte [panel_game_over + 2]   ; Buffer's starting X
-    movzx esi, byte [panel_game_over + 3]   ; Buffer's starting Y
-    add rdi, STATS_BUFFER_POS_X             ; Terminal's starting X
-    add rsi, STATS_BUFFER_POS_Y             ; Terminal's starting Y
-    
-    call r9
-
-    call process_selection
+    mov rdi, panel_options
+    mov rsi, LINE_SEL_SIZE
+    mov rdx, OPTIONS_PANEL_START_X
+    movzx r10d, byte [current_selection]
+    call draw_selection
     ret
+
 
 ; =======  Final Stats Rendering  =========================================== ;
 
@@ -281,121 +439,4 @@ _process_practice:
 
     pop r14
     pop r15
-    ret
-
-
-; =======  Input Handling  ================================================== ;
-
-; Process all inputs from the user.
-; Arguments:
-;   rdi - Pointer to the input buffer
-;   rsi - Length of the input
-; Return:
-;   rax - 0 to continue processing input, 1 to restart game, 2 to return to the
-;         start menu, and -1 to quit
-process_game_over_input:
-    test rsi, rsi
-    jz .return
-
-    mov ecx, [rdi]      ; Load 4 bytes (even if it has garbage, we don't care yet)
-
-    ; Route based on exact bytes read
-    cmp rsi, 1
-    je .handle_1_byte   ; WASD / Space
-    
-    cmp rsi, 3
-    je .handle_3_byte   ; Arrows
-    
-    jmp .done         ; Ignore 2-byte or 4+-byte keystrokes
-
-    .handle_1_byte:
-        ; RSI = 1. We ONLY look at CL
-        cmp cl, 'q'
-        je .do_quit
-        cmp cl, `\e`
-        je .do_quit
-
-        cmp cl, 0x20
-        je .do_select
-        cmp cl, 0x0d    ; Enter works as well
-        je .do_select
-
-        jmp .done
-
-    .handle_3_byte:
-        ; RSI = 3. Mask to 24 bits (0x00FFFFFF) to ignore the 4th LE byte
-        and ecx, 0x00FFFFFF
-        
-        cmp ecx, `\e[A`
-        je .do_up
-        cmp ecx, `\e[B`
-        je .do_down
-
-        jmp .done
-
-    .do_up:
-        cmp byte [current_selection], FIRST_OPTION
-        mov rdx, LAST_OPTION
-        jle .apply_selection
-
-        dec byte [current_selection]
-        call process_selection
-
-        jmp .done
-
-    .do_down:
-        cmp byte [current_selection], LAST_OPTION
-        mov rdx, FIRST_OPTION
-        jge .apply_selection
-
-        inc byte [current_selection]
-        call process_selection
-
-        jmp .done
-
-    .apply_selection:
-        mov byte [current_selection], dl
-        call process_selection
-        jmp .done
-
-    .do_select:
-        mov rax, 1
-        cmp byte [current_selection], OPTION_RESTART
-        je .return
-
-        mov rax, 2
-        cmp byte [current_selection], OPTION_START
-        je .return
-
-        ; OPTION_QUIT
-
-    .do_quit:
-        mov rax, -1
-        jmp .return
-
-    .done:
-        mov rax, 0
-
-    .return:
-        ret
-
-
-; =======  Selector Drawing  ================================================ ;
-
-; Updates the menu selection by redrawing the panel and highlighting the
-; current choice.
-; Arguments:
-;   None
-; Returns:
-;   None
-process_selection:
-    ; Clear the current selection
-    mov rdi, panel_options
-    call draw_panel
-
-    mov rdi, panel_options
-    mov rsi, LINE_SEL_SIZE
-    mov rdx, OPTIONS_PANEL_START_X
-    movzx r10d, byte [current_selection]
-    call draw_selection
     ret

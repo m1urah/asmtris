@@ -1,7 +1,7 @@
 global _start
-extern init_board, process_board_input, gravity_tick, verify_game_over          ; game.s
-extern init_start_screen, init_board_screen, update_screen, process_start_input ; screen/
-extern init_game_over_screen, process_game_over_input
+extern init_board, process_board_input, gravity_tick, verify_end_of_game            ; game.s
+extern init_start_screen, init_board_screen, update_screen, process_start_input     ; screen/
+extern init_end_game_screen, process_end_game_input
 default rel
 
 section .rodata
@@ -120,23 +120,26 @@ start_game:
         jl exit_handler
 
         .continue_loop:
-            call verify_game_over
-            test rax, rax
-            jnz game_over
+            call verify_end_of_game
+
+            mov rdi, rax
+            cmp rax, 0
+            jne end_game
 
             call gravity_tick
             call update_screen
         
         jmp .infinity
 
-; Displays the final game screen and waits for user input to either restart the
-; game or exit the program.
+; Displays the final game screen (game over, or win) and waits for user input
+; to either restart the game or exit the program.
 ; Arguments:
-;   None
+;   rdi - Wether the hit game over (1) or won (2)
 ; Return:
 ;   Does not return (either restarts game or exits process)
-game_over:
-    call init_game_over_screen
+end_game:
+    ; rdi already set
+    call init_end_game_screen
 
     .option_selection:
         call sleep
@@ -154,7 +157,7 @@ game_over:
 
         mov rdi, rsp
         mov rsi, r13
-        call process_game_over_input
+        call process_end_game_input
 
         cmp rax, -1          ; Wanna quit?
         je exit_handler

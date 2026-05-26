@@ -1,10 +1,8 @@
-global move_piece, rotate_figure, calculate_hard_drop, do_hard_drop
-global lock_delay_active, lock_delay, lock_resets, spawn_piece
-global choose_next_piece, active_piece, next_piece
-global LOCK_DELAY_VALUE, PIECE_STRUCT_MAX_SIZE
-extern game_board
-extern GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS
 default rel
+global move_piece, rotate_figure, calculate_hard_drop, do_hard_drop, init_piece
+global lock_delay_active, lock_delay, lock_resets, spawn_piece, choose_next_piece
+global active_piece, next_piece, LOCK_DELAY_VALUE, PIECE_STRUCT_MAX_SIZE
+extern game_board, GAME_BOARD_WIDTH, GAME_BOARD_HEIGHT, NUMBER_OF_HIDDEN_ROWS       ; game.s
 
 LOCK_DELAY_VALUE        equ 30  ; 0.5 sec at 60fps
 MAX_LOCK_RESETS         equ 15  ; Prevent infinite stalling
@@ -90,6 +88,29 @@ section .bss
     next_piece              resb PIECE_STRUCT_MAX_SIZE
 
 section .text
+
+; =======  Initialization  ================================================== ;
+
+; Initializes piece-related memory structures by clearing the active and next
+; piece buffers, and resetting the lock delay state.
+; Arguments:
+;   None
+; Return:
+;   None
+init_piece:
+    lea rdi, [active_piece]
+    mov rcx, PIECE_STRUCT_MAX_SIZE
+    rep stosb
+
+    lea rdi, [next_piece]
+    mov rcx, PIECE_STRUCT_MAX_SIZE
+    rep stosb
+
+    mov byte [lock_delay], 0
+    mov byte [lock_delay_active], 0
+    mov byte [lock_resets], 0
+    
+    ret
 
 
 ; =======  New Piece  ======================================================= ;
